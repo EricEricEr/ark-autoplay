@@ -1,0 +1,28 @@
+# release：发版流水线（占位，仅手动触发）
+# 目标形态（设计文档 §13）：评测报告 + 模型卡 + 数据集卡 + Hugging Face 上传，
+# 权重 / 数据集 / 客户端安装包三件套同步发布，语义化版本。
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发版版本号（semver，如 0.2.0）"
+        required: true
+        type: string
+
+jobs:
+  release:
+    name: 发版（占位）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 占位说明
+        run: |
+          echo "TODO：发版流水线尚未实现（手动触发 version=${{ inputs.version }}）。"
+          echo "计划步骤：跑全量评测 → 生成评测报告与模型卡 / 数据卡 → "
+          echo "上传权重与数据集至 Hugging Face（打版本 tag）→ 创建 GitHub Release。"
+          echo "发版需两名维护者复核评测报告后方可继续。"
+          exit 0

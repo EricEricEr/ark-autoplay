@@ -1,0 +1,25 @@
+# eval-smoke：评测冒烟（小样例集）
+# 当前为占位 job：仅打印 TODO，永不失败。
+# 待 evaluation/ 与合成 golden 样例就绪后替换为真实冒烟评测（见设计文档 §12/§13）。
+
+name: eval-smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: 评测冒烟（占位）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 占位说明（永不失败）
+        run: |
+          echo "TODO(M1)：评测冒烟尚未实现。"
+          echo "计划：用 tests/golden/ 的合成状态样例跑通『状态构建 → 决策前向 → 掩码应用』最小链路，"
+          echo "并校验评测三档划分无泄漏（tests/leak/）。本 job 为占位，始终返回成功。"
+          exit 0

@@ -1,0 +1,40 @@
+# CI 主门禁：ruff lint + pyright 类型 + pytest（矩阵：ubuntu + windows）
+# 注意：本文件中的命令必须与 AGENTS.md「环境命令」保持一致，变更时同步更新 AGENTS.md。
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: lint + type + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖（含 dev 组）
+        run: uv sync
+
+      - name: ruff lint
+        run: uv run ruff check
+
+      - name: pyright 类型检查
+        run: uv run pyright
+
+      - name: pytest
+        run: uv run pytest

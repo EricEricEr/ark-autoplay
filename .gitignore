@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- 项目追加（立项骨架） ----
+# 虚拟环境与构建产物
+.venv/
+*.egg-info/
+# 大体积数据目录：真实轨迹/截图等数据永不入库（见 data/README.md 素材红线）
+data/large/
+# 实验输出与本地缓存
+runs/
+outputs/
+.pyright/

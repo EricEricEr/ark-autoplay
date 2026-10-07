@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- 项目追加 ----
+# 本机运行的数据与日志不落库（素材红线兜底：轨迹/截图哈希等一律不进仓库）
+data/large/
+logs/
+*.parquet

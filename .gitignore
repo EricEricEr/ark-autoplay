@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- ark-autoplay-client 项目追加 ----
+.venv/
+*.egg-info/
+data/large/
+dist/
+build/

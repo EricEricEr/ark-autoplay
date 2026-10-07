@@ -1,0 +1,44 @@
+[project]
+name = "ark-client"
+version = "0.1.0"
+description = "Arknights Autoplay 玩家端客户端（MuMu 模拟器录屏 + 本地 ONNX CPU 推理 + 模拟输入）"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "onnxruntime",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.390",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+package = true
+
+[tool.uv.build-backend]
+module-name = "client"
+module-root = "src"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

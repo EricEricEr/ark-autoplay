@@ -48,8 +48,8 @@ Apache-2.0，见 [LICENSE](LICENSE)。
 
 ## 素材红线声明 / Game Assets Policy
 
-- **中文**：本项目与鹰角网络（Hypergryph）无任何关系，属研究性质的非官方项目。游戏截图、立绘、地图素材、解包数据版权归鹰角网络所有，**一律不进仓库、不随安装包分发**。仓库只发布代码与自产的结构化数据。
-- **English**: This project is an unofficial, research-oriented work with no affiliation to Hypergryph. All game screenshots, character art, stage maps and unpacked game data are copyrighted by Hypergryph and are NEVER committed to this repository or bundled with any installer. Only code and self-produced structured data are published.
+- **中文**：本项目与鹰角网络（Hypergryph）无任何关系，属研究性质的非官方项目。游戏截图、立绘、地图素材、解包数据版权归鹰角网络所有，**一律不进仓库、不随安装包分发**。仓库只发布代码与自产的结构化数据。若权利方对任何内容提出异议，维护者承诺在收到通知后尽快配合处理（下架、整改或删除），联系渠道为本仓库 Issue。
+- **English**: This project is an unofficial, research-oriented work with no affiliation to Hypergryph. All game screenshots, character art, stage maps and unpacked game data are copyrighted by Hypergryph and are NEVER committed to this repository or bundled with any installer. Only code and self-produced structured data are published. If any rights holder objects to any content, maintainers will cooperate promptly upon notice (takedown, remediation or removal). Contact: GitHub Issues.
 
 ## 风险告知 / Risk Notice
 

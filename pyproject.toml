@@ -5,7 +5,12 @@ description = "Arknights Autoplay 数据工厂与战场状态供给（MAA/MaaCor
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "AGPL-3.0-only" }
-dependencies = []
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
+    "Pillow>=10.3",
+    "PyYAML>=6.0",
+]
 
 [dependency-groups]
 dev = [

@@ -1,11 +1,12 @@
 """datapipe v1 构建 CLI。
 
 用法：
-    uv run python -m ark_core.datapipe.build featvec|stages|episodes|tiers|all \
+    uv run python -m ark_core.datapipe.build featvec|stages|stagefeat|episodes|tiers|all \
         [--config PATH] [--out DIR]
 
 - featvec：干员 / 敌人特征向量 parquet + featvec_schema.json
 - stages：关卡注册表 parquet（含 family）
+- stagefeat：关卡静态特征 parquet（地形张量 / 路线几何 / 出怪时间表）
 - episodes：copilot 作业 → episodes_v0.jsonl（含 deploy subtype / aux 计数）
 - tiers：作业阵容练度 5 桶 jobs_roster_tiers.json
 - all：以上全部 + 汇总 build_report.json（单独步骤也会写各自收到的部分）
@@ -36,9 +37,10 @@ from .sources import (
     out_path,
     resolve_sources,
 )
+from .stagefeat import STAGEFEAT_VERSION, build_stagefeat
 from .stages_meta import build_registry, family_of, load_stage_index
 
-_STEPS = ("featvec", "stages", "episodes", "tiers")
+_STEPS = ("featvec", "stages", "stagefeat", "episodes", "tiers")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -79,6 +81,31 @@ def _run_stages(resolved: ResolvedSources) -> dict[str, Any]:
     out = out_path(resolved, "stages_registry_parquet")
     res = build_registry(resolved.require("stages_jsonl"), out)
     return {"n_stages": res.n_stages, "n_families": res.n_families, "outputs": [str(res.out_path)]}
+
+
+def _run_stagefeat(cfg: DataConfig, resolved: ResolvedSources) -> dict[str, Any]:
+    include_variants = bool(cfg.raw.get("stagefeat", {}).get("include_variants", False))
+    res = build_stagefeat(
+        cfg, resolved, resolved.out_dir, include_variants=include_variants
+    )
+    st = res.stats
+    return {
+        "stagefeat_version": STAGEFEAT_VERSION,
+        "n_stages": res.n_stages,
+        "n_skipped_variant": st.n_skipped_variant,
+        "n_routes": st.n_routes,
+        "n_spawns": st.n_spawns,
+        "n_grid_cells": st.n_grid_cells,
+        "n_null_routes": st.n_null_routes,
+        "max_grid": [st.max_grid_rows, st.max_grid_cols],
+        "max_route_points": st.max_route_points,
+        "unknown_h_codes": dict(st.unknown_h_codes.most_common(20)),
+        "unknown_build_codes": dict(st.unknown_build_codes.most_common(20)),
+        "unknown_mode_codes": dict(st.unknown_mode_codes.most_common(20)),
+        "unknown_checkpoint_types": dict(st.unknown_checkpoint_types.most_common(20)),
+        "spawn_enemy_unmatched_top": st.spawn_enemy_unmatched.most_common(20),
+        "outputs": [str(res.out_path)],
+    }
 
 
 def _run_episodes(cfg: DataConfig, resolved: ResolvedSources) -> dict[str, Any]:
@@ -154,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     runners = {
         "featvec": lambda: _run_featvec(cfg, resolved),
         "stages": lambda: _run_stages(resolved),
+        "stagefeat": lambda: _run_stagefeat(cfg, resolved),
         "episodes": lambda: _run_episodes(cfg, resolved),
         "tiers": lambda: _run_tiers(cfg, resolved),
     }

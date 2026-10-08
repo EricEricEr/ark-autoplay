@@ -1,0 +1,80 @@
+# 关卡静态特征（stagefeat）编码表：数据即配置。
+#
+# 本文件承载 stages.jsonl → 模型可消费特征 的全部口径映射，代码内不出现魔法常量
+# （AGENTS.md 超参纪律）。所有映射均由真实数据交叉验证得出，验证方法与统计见
+# docs/adr/0003-stagefeat-v1.md。
+#
+# ── 为什么需要数字编码映射 ──────────────────────────────────────────────
+# stages.jsonl 的格子/路线字段存在「字符串」与「数字」两套写法，且**同关内不混用**
+# （实测 3279 关：纯字符串 3047 关、全数字 232 关、混用 0 关）。数字码的语义不写
+# 在数据里，只能由交叉验证反推：
+#   h      ：数字码只与特定 build 共现 —— '1' 仅配 NONE/RANGED，与 tile_wall(HIGHLAND,
+#            RANGED) 一致；'0' 配 MELEE/NONE/ALL，与 tile_road(LOWLAND, MELEE) 一致。
+#   build  ：'1' 与 tile_road(MELEE) 共现 → MELEE；'2' 与 tile_wall(RANGED) 共现 →
+#            RANGED；'0' 与 tile_start/tile_end/tile_hole(NONE) 共现 → NONE；
+#            '3' 仅出现在可部署格上 → ALL。
+#   mode   ：'1' 的起点格中 tile_flystart/tile_hole 占比显著高于 '0'（161+108 vs
+#            0+... ）→ FLY；'0' 与 tile_start 强相关 → WALK。
+# 若未来数据源改用单一写法，映射表保留即可，不影响产物 schema。
+
+stagefeat:
+  # 数字编码 → 语义名（字符串写法即语义名本身，原样透传）
+  numeric_h:
+    "0": LOWLAND
+    "1": HIGHLAND
+  numeric_build:
+    "0": NONE
+    "1": MELEE
+    "2": RANGED
+    "3": ALL
+  numeric_mode:
+    "0": WALK
+    "1": FLY
+
+  # 语义名 → 落盘整数编码（-1 保留给 UNKNOWN，见模块常量）
+  h_encoding:
+    LOWLAND: 0
+    HIGHLAND: 1
+  build_encoding:
+    NONE: 0
+    MELEE: 1
+    RANGED: 2
+    ALL: 3
+  mode_encoding:
+    WALK: 0
+    FLY: 1
+
+  # checkpoint 类型 → 处理方式（决定它是否贡献「路径点」）。
+  # 字符串码语义自明；数字码（只出现在 232 个全数字编码关卡）语义不在数据里，
+  # 由形态交叉验证判定：移动类 pos 恒为真实坐标且 time=0；等待类 pos 为 [0,0]
+  # 占位且 time>0；消失类 pos 为 [0,0]。实测占比见 ADR-0003。
+  #   move ：贡献路径点（pos 有效）
+  #   wait ：只贡献时长（time 秒），不占路径点
+  #   other：丢弃并计数（位置无意义）
+  checkpoint_kind:
+    # 字符串码
+    MOVE: move
+    PATROL_MOVE: move
+    APPEAR_AT_POS: move
+    MAP_OFFSET_MOVE: move
+    WAIT_FOR_SECONDS: wait
+    WAIT_CURRENT_FRAGMENT_TIME: wait
+    WAIT_CURRENT_WAVE_TIME: wait
+    WAIT_BOSSRUSH_WAVE: wait
+    DISAPPEAR: other
+    # 数字码（形态判定）
+    "0": move          # 实测 pos=[0,0] 占比 0.0%，time 全为 0（20277 次）
+    "6": move          # 实测 pos=[0,0] 占比 0.0%（653 次）
+    "1": wait          # 实测 pos=[0,0] 占比 98.4%，time>0（5161 次）
+    "3": wait          # 实测 pos=[0,0] 占比 100%，time>0（144 次）
+    "4": wait          # 实测 pos=[0,0] 占比 100%，time>0（80 次）
+    "5": other         # 实测 pos=[0,0] 占比 98.3%，time 全为 0（653 次）
+
+  # 结构化地形标记：命中即置位，供模型直接消费（无需解析 tile key 字符串）。
+  # 这些 key 是游戏侧稳定 token（非美术素材），与 deploy_vocab 的装置 token 同理。
+  structural_keys:
+    impassable: [tile_forbidden]      # 不可部署/不可通行（实测为最高频格，132569 格）
+    start: [tile_start]               # 敌人行走路线起点（实测 WALK 起点强相关）
+    end: [tile_end]                   # 路线终点（漏怪点）
+    hole: [tile_hole]                 # 坑洞（FLY 路线可跨越）
+    fly_start: [tile_flystart]        # 空中路线起点（实测 FLY 起点强相关）

@@ -34,19 +34,25 @@
 
 ## 数据管线（datapipe v1）｜Data pipeline quickstart
 
-把本机静态数据源（prts.plus 作业镜像 + 官方数值表，**均不入库**）转换为 featvec / 关卡注册表 / episode 轨迹 / 练度分桶产物（决策记录见 [docs/adr/0002](docs/adr/0002-datapipe-v1.md)）：
+把本机静态数据源（prts.plus 作业镜像 + 官方数值表，**均不入库**）转换为 featvec / 关卡注册表 / **关卡静态特征** / episode 轨迹 / 练度分桶产物（决策记录见 [docs/adr/0002](docs/adr/0002-datapipe-v1.md)、[docs/adr/0003](docs/adr/0003-stagefeat-v1.md)）：
 
 ```bash
 uv sync
 # 组织数据根（布局见 configs/data.yaml 头部注释），然后指定数据根并构建全部产物：
 export ARK_DATA_ROOT=/path/to/ark_data_root
 uv run python -m ark_core.datapipe.build all
-# 也可分步：featvec | stages | episodes | tiers；--config / --out 可覆盖配置
+# 也可分步：featvec | stages | stagefeat | episodes | tiers；--config / --out 可覆盖配置
 ```
 
 - 源路径全部走 `configs/data.yaml` + `ARK_DATA_ROOT`（代码内零机器路径）；缺源时报错会列出缺失清单与修复指引。
-- Deploy 非干员名三类 subtype（device / category / unknown_name）的词表在 `configs/deploy_vocab.yaml`（数据即配置）。
+- Deploy 非干员名三类 subtype（device / category / unknown_name）的词表在 `configs/deploy_vocab.yaml`；地形 / 路线编码表在 `configs/tile_vocab.yaml`（数据即配置）。
 - 产物默认输出到 `<数据根>/processed/`；真实数据产物永不入库（见下方红线）。
+
+### 关卡静态特征（stagefeat）
+
+`stages.jsonl` 的嵌套 JSON（格子 token / 路线 checkpoint / 出怪三元组）转成模型可直接张量化的整型列：`grid`（每格 5 通道：高度 / 可部署类型 / 是否可部署 / 起点 / 终点）、`routes`（路线几何 + 等待时长）、`spawns`（出怪时刻表）。
+
+**坐标序注意**：`grid` / `routes` 用 `[row, col]`，而 MAA 作业 deploy 的 `location` 是 `[x, y] = [col, row]`（两者均已用真实数据交叉验证，见 [ADR-0003](docs/adr/0003-stagefeat-v1.md) §3）。消费 episodes 中 deploy 位置的代码**必须**先过 `stagefeat.normalize_deploy_location()`。
 
 ## 相关仓库｜Sibling repositories
 

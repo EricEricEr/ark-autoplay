@@ -51,6 +51,16 @@ outputs:
   episodes_jsonl: episodes_v0.jsonl
   jobs_roster_tiers_json: jobs_roster_tiers.json
   build_report_json: build_report.json
+  stagefeat_parquet: stagefeat.parquet
+
+# 关卡静态特征（stagefeat）：stages.jsonl → 模型可消费的整型张量列。
+# 编码表（数字码语义 / 结构化标记 / checkpoint 分类）在 configs/tile_vocab.yaml；
+# 口径验证与实测统计见 docs/adr/0003-stagefeat-v1.md。
+stagefeat:
+  include_variants: false   # #f#（四星）/ #s（六星）变体与主关卡数据实测完全一致，默认不重复入表
+  max_grid_rows: 64         # 网格边长上限（实测最大 40×40）；超出报错而非静默截断
+  max_grid_cols: 64
+  max_route_points: 256     # 单条路线路径点上限（实测最大 132）；超出报错
 
 # 特征向量：数值归一化尺度（避免魔法数字进代码，见 AGENTS.md 超参纪律）。
 # 取对应属性的常见数量级，v1 仅做线性缩放；不追求严格 min-max。

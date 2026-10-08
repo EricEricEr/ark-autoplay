@@ -46,12 +46,12 @@ docs/              # rfc/（协议）、adr/（决策记录）、评测报告
 
 - 标题格式：`type(scope): 摘要`，`type ∈ {feat, fix, chore, docs, test, refactor, perf}`，scope 取模块名（如 `protocol`、`track_a`）。
 - 所有 PR（人审或 agent 审）必须按 **ReviewBench 九类缺陷 × 三级严重度**打标，清单已内置在 `.github/PULL_REQUEST_TEMPLATE.md`：Correctness / Security / Reliability / Maintainability / Testing / Performance / API architecture / Accessibility / Documentation × High / Medium / Low。
-- CI 全绿（ci / license-guard）才可合入；模型类改动须附评测报告（见 `.github/instructions/models.instructions.md`）。
+- CI 全绿（ci）才可合入；模型类改动须附评测报告（见 `.github/instructions/models.instructions.md`）。
 - 协议改动走 RFC（`docs/rfc/`），必须升 `protocol/version.py` 版本号并在 `protocol/migrations/` 提供迁移器。
 
 ## 安全红线
 
 - **禁止提交任何游戏素材**：截图、立绘、地图素材、解包数据（ArknightsGameData）版权归鹰角网络，一律不入库；`data/` 只放 schema 与合成样例。
-- **禁止 import bridge/maa**：core 与 client 仓库禁止 import bridge 仓库及任何 maa 相关模块的代码（AGPL 隔离，`license-guard` 工作流强制检查，命中即红）；跨仓库只走 IPC / 落盘 JSON。
+- **跨目录解耦（历史沿革）**：三仓时代 core/client 禁止 import bridge（AGPL 隔离，由已删除的 `license-guard` 工作流强制）。2026-10-09 全项目统一 AGPL-3.0 后该隔离**已非必需**，`core/`、`bridge/`、`client/` 之间可自由 import（见 `docs/adr/0004-unify-agpl-monorepo.md`）。跨进程边界仍走版本化协议 / 落盘 JSON，理由是解耦与可复现性，不再是许可证。
 - **禁止提交密钥与凭据**；权重与数据集只发布到 Hugging Face，不入 git。
 - 评测划分最高准则：按关卡家族（章节 / 活动）划分训练 / 测试，严禁按对局随机划分；泄漏检查用例位于 `tests/leak/`。

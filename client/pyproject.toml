@@ -1,6 +1,7 @@
 [project]
 name = "ark-client"
 version = "0.1.0"
+license = { text = "AGPL-3.0-only" }
 description = "Arknights Autoplay 玩家端客户端（MuMu 模拟器录屏 + 本地 ONNX CPU 推理 + 模拟输入）"
 readme = "README.md"
 requires-python = ">=3.12"

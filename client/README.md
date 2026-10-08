@@ -32,19 +32,19 @@ Arknights Autoplay is a fully open-source, community-driven, unofficial, non-com
 - **中文**：立项骨架（roadmap M0）。目录结构、协议约定、工程质量体系已就位，无实现逻辑。路线图见各仓库设计文档，M3（第 5-6 个月）交付可安装客户端 + 公测。
 - **English**: Project skeleton at milestone M0 — directory layout, protocol conventions and the quality toolchain are in place, with no implementation logic yet. A distributable client plus public beta is targeted at M3.
 
-## 兄弟仓库 / Sibling Repositories
+## 相关目录 / Sibling Directories
 
 | 仓库 | 角色 | 许可证 |
 |---|---|---|
-| [ark-autoplay-core](https://github.com/EricEricEr/ark-autoplay-core) | 协议、感知后处理、决策模型、训练、评测、导出 | Apache-2.0 |
-| [ark-autoplay-maa-bridge](https://github.com/EricEricEr/ark-autoplay-maa-bridge) | MAA fork、状态落盘、重放控制器（数据工厂） | AGPL-3.0 |
-| [ark-autoplay-client](https://github.com/EricEricEr/ark-autoplay-client) | 玩家端：录屏 + 本地推理 + 模拟输入（本仓库） | Apache-2.0 |
+| `core/` | 协议、感知后处理、决策模型、训练、评测、导出 | AGPL-3.0 |
+| `bridge/` | MAA 驱动、状态落盘、重放控制器（数据工厂） | AGPL-3.0 |
+| `client/`（本目录） | 玩家端：录屏 + 本地推理 + 模拟输入 | AGPL-3.0 |
 
-本仓库与 bridge 之间**无代码级依赖**：感知状态与决策权重一律通过版本化协议与发布 artifact 消费。
+本目录消费 core 发布的决策权重（ONNX）与版本化协议。历史沿革：三仓时代 core/bridge/client 之间禁止代码级依赖（许可证隔离）；2026-10-09 全项目统一 AGPL-3.0 后隔离已非必需，三个子目录可自由互相 import（见 [ADR-0004](../core/docs/adr/0004-unify-agpl-monorepo.md)）。
 
 ## 许可证 / License
 
-Apache-2.0，见 [LICENSE](LICENSE)。
+AGPL-3.0，见 [LICENSE](LICENSE)。
 
 ## 素材红线声明 / Game Assets Policy
 

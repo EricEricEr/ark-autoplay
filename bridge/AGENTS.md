@@ -5,13 +5,13 @@
 
 ## 项目概述
 
-Arknights Autoplay 三仓库之一：**数据工厂 + 战场状态供给**。衍生自 MaaAssistantArknights / MaaCore，AGPL-3.0 隔离仓。职责：MAA 自动重放 prts.plus 作业，逐 tick 落盘结构化战场状态与动作，产出带协议版本戳的通关轨迹。当前为 **v1WIP**：重放工厂链路已实测跑通（导航/接管/落盘），squad_builder 与 instance_pool 仍为占位 stub。
+Arknights Autoplay 合并仓的 `bridge/` 子目录：**数据工厂 + 战场状态供给**。职责：MAA 自动重放 prts.plus 作业，逐 tick 落盘结构化战场状态与动作，产出带协议版本戳的通关轨迹。当前为 **v1WIP**：重放工厂链路已实测跑通（导航/接管/落盘），squad_builder 与 instance_pool 仍为占位 stub。
 
 ### 铁律（最高优先级）
 
-1. **本仓库代码绝不被 ark-autoplay-core / ark-autoplay-client import。** 对外通信只走 IPC（本地 socket / 落盘 JSON）+ 版本化协议；不暴露任何代码级接口。
-2. 本仓库也**不 import core 的任何代码**；只认 prts.plus 作业 JSON 与游戏画面，**输出即协议**。
-3. 执行环境**仅限 MuMu 模拟器**（1920×1080 / DPI 320 基线）。
+1. **执行环境仅限 MuMu 模拟器**（1920×1080 / DPI 320 基线）；其他端一律不支持。
+2. **不复制、不修改上游 MAA 源码**：经 `Asst.load()` 动态加载官方发行版、调用其公开 API。`maacore/` 与 `patches/` 当前为空；**若将来导入 MaaCore 源码，必须先按 `NOTICE.md` 粘贴上游附加条款原文**，且本目录随之成为上游衍生作品。
+3. 跨进程边界走版本化协议 / 落盘 JSON（为解耦与可复现性，**不再**是许可证隔离要求——全项目已统一 AGPL-3.0，见 `../core/docs/adr/0004-unify-agpl-monorepo.md`）。
 
 ## 目录布局
 
@@ -90,5 +90,5 @@ uv run pyright       # 类型检查（引入 pyright 后启用；当前未配置
 
 ## 参考
 
-- 设计文档（v2.1 立项方案）：§3 许可证隔离、§5.2 本仓目录树、§6 数据协议、§10 数据工厂、§13 工程质量体系。
-- 姐妹仓库：ark-autoplay-core（Apache-2.0）、ark-autoplay-client（Apache-2.0）。
+- 设计文档（v2.1 立项方案）：§3 许可证策略、§5.2 本目录树、§6 数据协议、§10 数据工厂、§13 工程质量体系。
+- 相关目录：`core/`（协议 / 感知 / 模型 / 训练 / 评测）、`client/`（玩家端）；三者同为 AGPL-3.0。

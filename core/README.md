@@ -11,19 +11,21 @@
 ## 架构中的位置｜Position in the architecture
 
 ```text
-游戏客户端(MuMu 模拟器) ──截图──► bridge(AGPL, 数据工厂) ──IPC / 落盘 JSON──► 【本仓库 core】 ──离散动作──► client(玩家端)
+游戏客户端(MuMu 模拟器) ──截图──► bridge(数据工厂) ──版本化 JSON 协议──► 【本仓 core/】 ──离散动作──► client(玩家端)
 ```
 
-- core 只消费 bridge 产出的**版本化 JSON 协议**，两者之间无代码级链接；`license-guard` CI 强制检查本仓库不得 import 任何 bridge/maa 相关模块。
+- core 消费 bridge 产出的**版本化 JSON 协议**（历史沿革：三仓时代该协议同时承担许可证隔离职责；全项目统一 AGPL-3.0 后隔离已非必需，协议保留是因为它对跨进程解耦与可复现性依然有价值——见 [ADR-0004](docs/adr/0004-unify-agpl-monorepo.md)）。
 - 决策输出为离散语义动作（`deploy / skill / retreat / wait`）+ 动作掩码，由 client 经 MuMu ADB 模拟输入执行。
 
 ## 当前状态｜Status
 
-**立项骨架（Roadmap M0 基建期）**：仓库结构、协议 stub、CI 门禁与 agent 协作文件已就位；所有代码均为带 TODO 标注的占位 stub，尚无真实实现。里程碑见设计文档 §14（M0 基建 → M1 双轨 → M2 裁决 → M3 玩家端 → M4 后置）。
+**立项骨架（Roadmap M0 基建期）**：仓库结构、协议 stub、CI 门禁与 agent 协作文件已就位；决策 / 训练 / 评测 / 感知层代码均为带 TODO 标注的占位 stub，尚无真实实现。已落地的真实实现集中在数据管线（见下方 quickstart）。里程碑见设计文档 §14（M0 基建 → M1 双轨 → M2 裁决 → M3 玩家端 → M4 后置）。
 
 ## 许可证｜License
 
-代码采用 **Apache-2.0**（见 [LICENSE](LICENSE)）。三仓库按许可证隔离：bridge 因衍生自 MAA/MaaFramework 强制 AGPL-3.0，core 与 client 均为 Apache-2.0（决策记录见 [docs/adr/0001](docs/adr/0001-repo-split-license-isolation.md)）。
+本项目**整体采用 AGPL-3.0**（见根目录与各子目录的 `LICENSE`，四处文本完全一致）。
+
+选择 AGPL 而非宽松许可证是**项目方的主动决定**：允许任何人自由使用、修改、分发，但**禁止将本项目（或其衍生作品）做成闭源商用产品**——只要分发或提供网络服务，就必须以 AGPL 公开全部源码。决策记录见 [ADR-0004](docs/adr/0004-unify-agpl-monorepo.md)（该 ADR 取代了早期三仓许可证隔离方案 [ADR-0001](docs/adr/0001-repo-split-license-isolation.md)）。
 
 ## 素材红线声明｜Asset red line
 
@@ -54,13 +56,15 @@ uv run python -m ark_core.datapipe.build all
 
 **坐标序注意**：`grid` / `routes` 用 `[row, col]`，而 MAA 作业 deploy 的 `location` 是 `[x, y] = [col, row]`（两者均已用真实数据交叉验证，见 [ADR-0003](docs/adr/0003-stagefeat-v1.md) §3）。消费 episodes 中 deploy 位置的代码**必须**先过 `stagefeat.normalize_deploy_location()`。
 
-## 相关仓库｜Sibling repositories
+## 相关目录｜Sibling directories
 
-| 仓库 | 角色 | 许可证 |
+本仓为**合并仓 `ark-autoplay` 的 `core/` 子目录**（2026-10-09 由三独立仓库合并，见 [ADR-0004](docs/adr/0004-unify-agpl-monorepo.md)）：
+
+| 目录 | 角色 | 许可证 |
 |---|---|---|
-| [ark-autoplay-core](https://github.com/EricEricEr/ark-autoplay-core)（本仓库） | 大脑：协议 / 感知 / 模型 / 训练 / 评测 | Apache-2.0 |
-| [ark-autoplay-maa-bridge](https://github.com/EricEricEr/ark-autoplay-maa-bridge) | 数据工厂：MAA fork、状态落盘、作业重放 | AGPL-3.0 |
-| [ark-autoplay-client](https://github.com/EricEricEr/ark-autoplay-client) | 玩家端：录屏 + 本地推理 + 模拟输入 | Apache-2.0 |
+| `core/`（本目录） | 大脑：协议 / 感知 / 模型 / 训练 / 评测 | AGPL-3.0 |
+| `bridge/` | 数据工厂：MAA 驱动、状态落盘、作业重放 | AGPL-3.0 |
+| `client/` | 玩家端：录屏 + 本地推理 + 模拟输入 | AGPL-3.0 |
 
 ## 贡献｜Contributing
 

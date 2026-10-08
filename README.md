@@ -23,7 +23,9 @@ MuMu模拟器 ──► bridge（本仓，AGPL-3.0）──► 落盘 JSON / IPC
 
 ### 当前状态
 
-**立项骨架（roadmap M0，第 1 个月）**：仅有带 docstring 的占位 stub，无实现逻辑。M0 交付目标：bridge 状态落盘、重放工厂、首批 ≥500 条过协议校验的通关轨迹。
+**v1WIP（roadmap M0 进行中）**：重放数据工厂链路已实测跑通：固定点位导航
+进 briefing → MAA Copilot 接管作战 → 节拍截图 + 回调事件流 → episode bundle
+落盘。squad_builder / instance_pool 仍为占位 stub。
 
 ### 执行环境
 
@@ -51,9 +53,20 @@ MuMu模拟器 ──► bridge（本仓，AGPL-3.0）──► 落盘 JSON / IPC
 
 ```bash
 uv sync --dev        # 安装依赖（uv）
-uv run pytest        # 测试（当前仅冒烟）
+uv run pytest        # 纯逻辑单测
 uv run ruff check    # lint
 ```
+
+本机实机跑工厂（开发机环境）：
+
+1. 前置：MuMu 12（1920×1080 / DPI 320，游戏已登录停在任意常规界面）；
+   官方 MAA 发行版解压安装（本仓只读调用其 `asst` Python 接口，
+   **MAA GUI 保持关闭**）；参照 `configs/instances/example.yaml` 写好
+   自己的实例 YAML（adb 路径、MAA 目录、实例端口均为机器本地配置）。
+2. 冒烟连接：`python -m bridge.maa_driver --user-dir <本地工作目录>/debug/maa_user`
+3. 批量重放：`python -m bridge.replay_controller --work <本地数据目录>`
+   （作业队列为 `configs/jobs_main_v1.json`；episode 束落盘到
+   `<数据目录>/episodes/`；导航点位标定见 `configs/nav_main.yaml` 注释）。
 
 贡献规范见 `AGENTS.md`；PR 请按模板完成 ReviewBench 九类打标。
 

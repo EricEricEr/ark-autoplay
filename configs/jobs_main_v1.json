@@ -1,5 +1,5 @@
 {
- "_comment": "v1 主线低阶作业队列：选自 ak_dataset_v0.1（prts.plus 社区作业导出），筛选条件 main_00/01 系列、全员 ≤3 星、like≥8、动作步数少、Deploy 动作均含干员名；已离线转换为 MAA 作业形态（maa_job），来源署名见每条 source.comment。",
+ "_comment": "v1 主线低星作业队列：选自 ak_dataset_v0.1（prts.plus 社区作业导出），筛选 main_00/01 系列、全员 ≤3 星、like≥8、动作步数少、Deploy 均含干员名且关卡在 nav_main.yaml 钳位锚点表内；已离线转换为 MAA 作业形态（maa_job，编队要求省略——MAA 会把 module:0 当硬要求误判 OperatorMissing），来源署名见每条 source.comment。",
  "jobs": [
   {
    "source": {
@@ -37,26 +37,12 @@
      {
       "name": "夜刀",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "翎羽",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      }
     ],
     "groups": [],
@@ -106,14 +92,7 @@
      {
       "name": "黑角",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      }
     ],
     "groups": [],
@@ -134,172 +113,6 @@
     "doc": {
      "title": "序章 黑暗时代·上 - 0-2 - 守卫",
      "details": "来源: prts.plus 作业 #48628（ark-autoplay 数据工厂重放）"
-    },
-    "minimum_required": "v4.0.0"
-   }
-  },
-  {
-   "source": {
-    "type": "prts.plus",
-    "job_id": 48630,
-    "title": "序章 黑暗时代·上 - 0-4 - 混战",
-    "like": 84,
-    "views": 779,
-    "rating_ratio": 1.0,
-    "upload_time": "2025-03-15T19:14:23",
-    "stage_id_raw": "main_00-04",
-    "lineup_raw": [
-     {
-      "name": "黑角",
-      "id": "char_500_noirc",
-      "req": null
-     },
-     {
-      "name": "巡林者",
-      "id": "char_503_rang",
-      "req": null
-     }
-    ],
-    "comment": "来源 prts.plus 作业 #48630（ak_dataset_v0.1 copilot.jsonl），编队要求已置零回放，原始 req 见 lineup_raw"
-   },
-   "maa_job": {
-    "stage_name": "0-4",
-    "opers": [
-     {
-      "name": "黑角",
-      "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
-     },
-     {
-      "name": "巡林者",
-      "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
-     }
-    ],
-    "groups": [],
-    "actions": [
-     {
-      "type": "Deploy",
-      "name": "黑角",
-      "location": [
-       4,
-       2
-      ],
-      "direction": "Left"
-     },
-     {
-      "type": "Deploy",
-      "name": "巡林者",
-      "location": [
-       3,
-       1
-      ],
-      "direction": "Down"
-     },
-     {
-      "type": "SpeedUp"
-     }
-    ],
-    "doc": {
-     "title": "序章 黑暗时代·上 - 0-4 - 混战",
-     "details": "来源: prts.plus 作业 #48630（ark-autoplay 数据工厂重放）"
-    },
-    "minimum_required": "v4.0.0"
-   }
-  },
-  {
-   "source": {
-    "type": "prts.plus",
-    "job_id": 48633,
-    "title": "序章 黑暗时代·上 - 0-5 - 腐化",
-    "like": 71,
-    "views": 757,
-    "rating_ratio": 1.0,
-    "upload_time": "2025-03-15T19:20:04",
-    "stage_id_raw": "main_00-05",
-    "lineup_raw": [
-     {
-      "name": "黑角",
-      "id": "char_500_noirc",
-      "req": null
-     },
-     {
-      "name": "巡林者",
-      "id": "char_503_rang",
-      "req": null
-     }
-    ],
-    "comment": "来源 prts.plus 作业 #48633（ak_dataset_v0.1 copilot.jsonl），编队要求已置零回放，原始 req 见 lineup_raw"
-   },
-   "maa_job": {
-    "stage_name": "0-5",
-    "opers": [
-     {
-      "name": "黑角",
-      "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
-     },
-     {
-      "name": "巡林者",
-      "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
-     }
-    ],
-    "groups": [],
-    "actions": [
-     {
-      "type": "Deploy",
-      "name": "黑角",
-      "location": [
-       7,
-       2
-      ],
-      "direction": "Left"
-     },
-     {
-      "type": "Deploy",
-      "name": "巡林者",
-      "location": [
-       6,
-       3
-      ],
-      "direction": "Left"
-     },
-     {
-      "type": "SpeedUp"
-     }
-    ],
-    "doc": {
-     "title": "序章 黑暗时代·上 - 0-5 - 腐化",
-     "details": "来源: prts.plus 作业 #48633（ark-autoplay 数据工厂重放）"
     },
     "minimum_required": "v4.0.0"
    }
@@ -349,62 +162,27 @@
      {
       "name": "芬",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "米格鲁",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "12F",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "巡林者",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "安赛尔",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      }
     ],
     "groups": [],
@@ -499,38 +277,17 @@
      {
       "name": "月见夜",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "克洛丝",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "卡缇",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      }
     ],
     "groups": [],
@@ -613,50 +370,22 @@
      {
       "name": "泡普卡",
       "skill": 1,
-      "skill_usage": 1,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 1
      },
      {
       "name": "12F",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "克洛丝",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "黑角",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      }
     ],
     "groups": [],
@@ -711,176 +440,6 @@
   {
    "source": {
     "type": "prts.plus",
-    "job_id": 48655,
-    "title": "第一章 黑暗时代·下 - 1-4 - 先兆",
-    "like": 135,
-    "views": 1869,
-    "rating_ratio": 1.0,
-    "upload_time": "2025-03-15T20:13:07",
-    "stage_id_raw": "main_01-04",
-    "lineup_raw": [
-     {
-      "name": "芬",
-      "id": "char_123_fang",
-      "req": null
-     },
-     {
-      "name": "米格鲁",
-      "id": "char_122_beagle",
-      "req": null
-     },
-     {
-      "name": "安赛尔",
-      "id": "char_212_ansel",
-      "req": null
-     },
-     {
-      "name": "玫兰莎",
-      "id": "char_208_melan",
-      "req": null
-     },
-     {
-      "name": "克洛丝",
-      "id": "char_124_kroos",
-      "req": null
-     }
-    ],
-    "comment": "来源 prts.plus 作业 #48655（ak_dataset_v0.1 copilot.jsonl），编队要求已置零回放，原始 req 见 lineup_raw"
-   },
-   "maa_job": {
-    "stage_name": "1-4",
-    "opers": [
-     {
-      "name": "芬",
-      "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
-     },
-     {
-      "name": "米格鲁",
-      "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
-     },
-     {
-      "name": "安赛尔",
-      "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
-     },
-     {
-      "name": "玫兰莎",
-      "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
-     },
-     {
-      "name": "克洛丝",
-      "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
-     }
-    ],
-    "groups": [],
-    "actions": [
-     {
-      "type": "SpeedUp"
-     },
-     {
-      "type": "Deploy",
-      "name": "芬",
-      "location": [
-       4,
-       4
-      ],
-      "direction": "Right"
-     },
-     {
-      "type": "Deploy",
-      "name": "玫兰莎",
-      "location": [
-       5,
-       3
-      ],
-      "direction": "Up"
-     },
-     {
-      "type": "Deploy",
-      "name": "克洛丝",
-      "location": [
-       5,
-       5
-      ],
-      "direction": "Up"
-     },
-     {
-      "type": "Deploy",
-      "name": "安赛尔",
-      "location": [
-       4,
-       5
-      ],
-      "direction": "Up"
-     },
-     {
-      "type": "Deploy",
-      "name": "米格鲁",
-      "location": [
-       4,
-       2
-      ],
-      "direction": "Right"
-     },
-     {
-      "type": "Skill",
-      "name": "玫兰莎",
-      "location": [
-       5,
-       3
-      ],
-      "kills": 36
-     }
-    ],
-    "doc": {
-     "title": "第一章 黑暗时代·下 - 1-4 - 先兆",
-     "details": "来源: prts.plus 作业 #48655（ark-autoplay 数据工厂重放）"
-    },
-    "minimum_required": "v4.0.0"
-   }
-  },
-  {
-   "source": {
-    "type": "prts.plus",
     "job_id": 25056,
     "title": "第一章 黑暗时代·下 - 1-12 - 代价",
     "like": 76,
@@ -923,62 +482,27 @@
      {
       "name": "克洛丝",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "斑点",
       "skill": 1,
-      "skill_usage": 1,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 1
      },
      {
       "name": "夜刀",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      },
      {
       "name": "安赛尔",
       "skill": 1,
-      "skill_usage": 1,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 1
      },
      {
       "name": "Lancet-2",
       "skill": 1,
-      "skill_usage": 0,
-      "requirements": {
-       "elite": 0,
-       "level": 0,
-       "skill_level": 1,
-       "module": 0,
-       "potentiality": 0
-      }
+      "skill_usage": 0
      }
     ],
     "groups": [],

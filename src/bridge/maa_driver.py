@@ -21,6 +21,7 @@ Copilot 任务下发与任务链等待、ADB 截图与点触。
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -237,11 +238,9 @@ class MaaDriver:
         return bool(self._asst.stop())
 
     def close(self) -> None:
-        """停止并释放实例（幂等）。"""
-        try:
+        """停止并释放实例（幂等；关闭路径不容许抛出）。"""
+        with contextlib.suppress(Exception):
             self.stop()
-        except Exception:  # noqa: BLE001  # 关闭路径不容许抛出
-            pass
         self._asst = None
 
     # ---- ADB 通道（截图与模拟输入）----

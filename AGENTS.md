@@ -5,7 +5,7 @@
 
 ## 项目概述
 
-Arknights Autoplay 三仓库之一：**数据工厂 + 战场状态供给**。衍生自 MaaAssistantArknights / MaaCore，AGPL-3.0 隔离仓。职责：MAA 自动重放 prts.plus 作业，逐 tick 落盘结构化战场状态与动作，产出带协议版本戳的通关轨迹。当前处于**立项骨架阶段（M0）**，只有占位 stub。
+Arknights Autoplay 三仓库之一：**数据工厂 + 战场状态供给**。衍生自 MaaAssistantArknights / MaaCore，AGPL-3.0 隔离仓。职责：MAA 自动重放 prts.plus 作业，逐 tick 落盘结构化战场状态与动作，产出带协议版本戳的通关轨迹。当前为 **v1WIP**：重放工厂链路已实测跑通（导航/接管/落盘），squad_builder 与 instance_pool 仍为占位 stub。
 
 ### 铁律（最高优先级）
 
@@ -16,22 +16,37 @@ Arknights Autoplay 三仓库之一：**数据工厂 + 战场状态供给**。衍
 ## 目录布局
 
 ```
-├── src/bridge/              # Python 包 ark-bridge（占位 stub）
-│   ├── state_logger.py      # 战场状态落盘：每 tick 费用/击杀/干员卡/技力/格子占用
-│   ├── replay_controller.py # 作业重放调度：领作业→建队→进图→执行→判胜负→存盘
+├── src/bridge/              # Python 包 ark-bridge
+│   ├── maa_driver.py        # MAA 薄封装：连接/回调事件流/Copilot 下发/adb 截图点触
+│   ├── navigator.py         # 主线导航：固定点位（钳位锚定）+ 蓝钮像素校验进 briefing
+│   ├── state_logger.py      # 作战期节拍截图（1.5s tick + 事件补拍，PNG 落盘）
+│   ├── replay_controller.py # 作业重放调度：领作业→进图→执行→结算推进→存盘
 │   ├── episode_writer.py    # 轨迹写出（protocol_version 戳 + 截图校验哈希）
-│   ├── squad_builder.py     # 按作业阵容自动编队；阵容随机化变体生成
-│   └── instance_pool.py     # MuMu 多开实例池（2-3 并发，多开器管理）
-├── maacore/                 # MaaCore fork（保留上游 git 历史；当前为空）
+│   ├── squad_builder.py     # 按作业阵容自动编队；阵容随机化变体生成（占位 stub）
+│   └── instance_pool.py     # MuMu 多开实例池（2-3 并发，多开器管理；占位 stub）
+├── maacore/                 # MaaCore fork（保留上游 git 历史；当前为空，
+│                            #   v1WIP 纯 Python 驱动官方发行版，无需 fork，见 docs/adr/0001）
 ├── patches/                 # 对 fork 的本地改动补丁（按序编号，不直接改 fork 树）
 ├── configs/
-│   ├── jobs/                # 每关重放任务（作业 id、阵容、变体数）
-│   └── instances/           # MuMu 实例定义（端口/分辨率/DPI），example.yaml 为模板
-├── tests/                   # 落盘完整性、断点续跑、协议兼容测试（当前仅冒烟）
+│   ├── jobs_main_v1.json    # v1 主线低星作业队列（内嵌 MAA 形态作业 + prts.plus 署名）
+│   ├── nav_main.yaml        # 主线导航固定点位表（钳位锚定坐标 + 蓝钮校验参数）
+│   ├── jobs/                # 后续每关重放任务定义（作业 id、阵容、变体数）
+│   └── instances/           # MuMu 实例定义（端口/分辨率/DPI；example.yaml 为模板，
+│                            #   mumu_local.yaml 为开发机实例，路径属机器本地配置）
+├── docs/adr/                # 决策记录（0001 = 纯 Python 驱动官方 MAA，不 fork）
+├── tests/                   # 纯逻辑单测（转换器/写出器/几何表/像素判定）
 ├── .github/                 # CI、Copilot 指令、PR/Issue 模板
 ├── LICENSE                  # AGPL-3.0
 └── NOTICE.md                # 衍生作品声明 + 上游附加条款（首次导入源码时粘贴原文）
 ```
+
+### 运行时依赖（本机执行，非 CI）
+
+- **官方 MAA 发行版**（v6.18.0 实测）：`maa_driver` 经 `Asst.load` 动态加载其
+  Python 接口（`asst`），**只读使用安装目录，不复制/不修改任何内容**；
+  驱动期间 MAA GUI 保持关闭。MAA 目录路径入 `configs/instances/*.yaml`。
+- **MuMu 12 模拟器**（1920×1080 / DPI 320）+ 其自带 adb；实例地址入同上配置。
+- 数据落盘根（episodes/tmp/debug）由运行参数 `--work` 指定，属机器本地目录。
 
 ## 环境命令
 

@@ -1,0 +1,28 @@
+# license-guard：许可证隔离检查
+# MAA / MaaFramework 为 AGPL-3.0 + 附加条款，bridge 仓库衍生自 AGPL；
+# core（本仓库）与 client 禁止 import 任何 bridge / maa 相关模块，命中即红。
+# 跨仓库只允许 IPC（本地 socket / 文件落盘）+ 版本化 JSON 协议。
+
+name: license-guard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  forbidden-imports:
+    name: 禁止 import bridge / maa 相关模块
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 扫描 Python 源码中的违禁 import
+        run: |
+          set -euo pipefail
+          PATTERN='^[[:space:]]*(import|from)[[:space:]]+(bridge|maa|maacore|maa_bridge|maafw)([[:space:].]|$)'
+          if grep -rnE "$PATTERN" src tests --include='*.py'; then
+            echo "::error::检测到对 bridge / maa 相关模块的 import，违反 AGPL 许可证隔离红线（见 docs/adr/0001）。"
+            exit 1
+          fi
+          echo "未发现违禁 import，许可证隔离检查通过。"

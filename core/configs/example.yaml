@@ -1,0 +1,44 @@
+# 示例实验配置（一实验一配置，禁止代码内超参）
+# 每次实验登记：config 哈希 + 数据版本 + 结果（见 AGENTS.md 与设计文档 §11.5）
+
+experiment:
+  name: example-bc-track-a        # 实验名（唯一）
+  track: track_a                  # 双轨之一：track_a / track_b
+  seed: 42
+
+data:
+  dataset: "hf://EricEricEr/ark-episodes@v0.1"  # 轨迹数据集（HF Datasets 版本 tag，占位）
+  protocol_version: "0.1.0"       # 消费数据的协议版本，须与 protocol/version.py 兼容
+  split:
+    scheme: family_holdout        # 按关卡家族留出（严禁按对局随机划分）
+    holdout_families: ["main_09_12"]  # 真·零样本留出章节（占位示例）
+    leakage_check: true           # 跑 tests/leak/ 泄漏检查
+
+model:
+  hidden_dim: 256                 # 实体 Transformer 隐维
+  num_layers: 4
+  num_heads: 8
+  max_entities: 128               # 每状态最大实体 token 数（干员+敌人+格子+手牌）
+
+training:
+  stage: imitate                  # pretrain_ssl / imitate / dagger
+  epochs: 20
+  batch_size: 64
+  lr: 3.0e-4
+  warmup_steps: 500
+  augment:
+    squad_randomize: true         # 阵容随机化
+    perturb_ratio: 0.05           # 状态扰动比例
+  dagger:
+    enabled: false                # M2 后开启纠偏循环
+    mix_ratio: 0.3                # 纠偏数据混入比例
+
+evaluation:
+  tiers: [in_train, same_chapter_unseen, unseen_chapter]  # 三档；对外只报后两档
+  baselines: [random_legal, copilot_replay]
+  report_out: "runs/example/report.md"
+
+export:
+  onnx:
+    enabled: true
+    numeric_check: true           # 导出后数值校验，精度回退超阈值即失败

@@ -1,0 +1,127 @@
+# 数据管线 v1（datapipe v1）输入与产物配置。
+# 路径解析规则（实现见 src/ark_core/datapipe/sources.py）：
+#   1. 下列 sources.* 为相对路径时，相对数据根 data_root 解析；
+#   2. data_root 为 null 时，使用环境变量 ARK_DATA_ROOT 作为数据根；
+#   3. data_root 与 ARK_DATA_ROOT 均未设置时，相对仓库根目录解析（此时通常找不到源文件，
+#      报错信息会列出全部缺失路径与修复方法——真实数据源本就不入库，见 data/README.md）；
+#   4. 绝对路径原样使用；所有路径支持 ~ 与环境变量展开。
+#
+# 数据根约定布局（任一静态数据目录均可，推荐软链 / junction 组织）：
+#   <data_root>/ak_dataset_v0.1/{copilot,stages,operators}.jsonl   # prts.plus 作业镜像（本机抓取）
+#   <data_root>/official-excel/{character,skill,battle_equip,uniequip,enemy_handbook}_table.json
+#   <data_root>/official-enemies/enemy-database-<hash>.json
+#
+# machine-local 示例（仅注释，不是约定；各贡献者机器按上面布局自行组织）：
+#   Windows 示例外：# data_root: "E:/Users/xxx/Desktop/ak-static"
+#   或按源逐项绝对路径覆盖，例：
+#     copilot_jsonl: "E:/Users/xxx/Downloads/ak_dataset_v0.1/copilot.jsonl"
+#
+# TODO(infra): 本机已观测到 python 进程无法在 agent 工作区之外创建文件
+# （疑为杀软 / 受控文件夹访问限制），真实构建产物暂输出到 agent 工作区，
+# 命令见 docs/adr/0002 与 README；待排查 Defender 排除项后回归仓库内 data/large/。
+# 注意：不要为此修改任何系统安全设置。
+
+data_version: "77.6.0+a550f5e+ak_dataset_v0.1"
+
+data_root: null  # null 时使用环境变量 ARK_DATA_ROOT
+
+# 输入源（相对数据根；enemy_database 文件名内的哈希即官方数据 commit 指纹 a550f5e）
+sources:
+  copilot_jsonl: ak_dataset_v0.1/copilot.jsonl
+  stages_jsonl: ak_dataset_v0.1/stages.jsonl
+  operators_jsonl: ak_dataset_v0.1/operators.jsonl
+  character_table: official-excel/character_table.json
+  skill_table: official-excel/skill_table.json
+  battle_equip_table: official-excel/battle_equip_table.json
+  uniequip_table: official-excel/uniequip_table.json
+  enemy_handbook_table: official-excel/enemy_handbook_table.json
+  enemy_database: official-enemies/enemy-database-a550f5e048bb94e7cdefc6eb97a4091f0c4c7add.json
+
+# 标记可选源：缺失时跳过相应增强字段而非整体失败（report 中注明）
+optional_sources:
+  enemy_handbook_table: true
+
+# 产物输出目录（相对数据根，或绝对路径；可被 CLI --out 覆盖）
+outputs:
+  dir: processed
+  featvec_operators_parquet: featvec_operators.parquet
+  featvec_enemies_parquet: featvec_enemies.parquet
+  featvec_schema_json: featvec_schema.json
+  stages_registry_parquet: stages_registry.parquet
+  episodes_jsonl: episodes_v0.jsonl
+  jobs_roster_tiers_json: jobs_roster_tiers.json
+  build_report_json: build_report.json
+  stagefeat_parquet: stagefeat.parquet
+
+# 关卡静态特征（stagefeat）：stages.jsonl → 模型可消费的整型张量列。
+# 编码表（数字码语义 / 结构化标记 / checkpoint 分类）在 configs/tile_vocab.yaml；
+# 口径验证与实测统计见 docs/adr/0003-stagefeat-v1.md。
+stagefeat:
+  include_variants: false   # #f#（四星）/ #s（六星）变体与主关卡数据实测完全一致，默认不重复入表
+  max_grid_rows: 64         # 网格边长上限（实测最大 40×40）；超出报错而非静默截断
+  max_grid_cols: 64
+  max_route_points: 256     # 单条路线路径点上限（实测最大 132）；超出报错
+
+# 特征向量：数值归一化尺度（避免魔法数字进代码，见 AGENTS.md 超参纪律）。
+# 取对应属性的常见数量级，v1 仅做线性缩放；不追求严格 min-max。
+featvec:
+  op_stat_scales:
+    maxHp: 3000.0
+    atk: 800.0
+    def: 600.0
+    magicResistance: 30.0
+    cost: 25.0
+    blockCnt: 3.0
+    baseAttackTime: 2.0
+    attackSpeed: 100.0
+    respawnTime: 70.0
+    rarityTier: 6.0
+  enemy_stat_scales:
+    maxHp: 40000.0
+    atk: 1500.0
+    def: 1500.0
+    magicResistance: 80.0
+    moveSpeed: 1.5
+    attackSpeed: 100.0
+    baseAttackTime: 4.0
+    massLevel: 5.0
+    rangeRadius: 4.0
+    lifePointReduce: 30.0
+  # 技能关键词标签（启发式：在技能名 + 描述中做子串匹配）。
+  # TODO(M1): 替换为人工整理的技能语义标签表（与 models/track_a/features.py 对齐）。
+  skill_keywords:
+    - 攻击
+    - 防御
+    - 生命
+    - 治疗
+    - 回复
+    - 费用
+    - 眩晕
+    - 冻结
+    - 睡眠
+    - 减速
+    - 束缚
+    - 沉默
+    - 浮空
+    - 寒冷
+    - 燃烧
+    - 元素
+    - 脆弱
+    - 鼓舞
+    - 庇护
+    - 抵抗
+    - 护盾
+    - 迷彩
+    - 隐匿
+    - 闪避
+    - 召唤
+    - 阻挡
+    - 溅射
+    - 位移
+    - 推力
+    - 拉力
+
+# 作业转换（copilot → episode）开关
+episodes:
+  drop_when_all_actions_skipped: true   # 全部动作均为辅助类（均跳过）的作业整局丢弃
+  unknown_names_topk_in_report: 100     # build_report 中保留的未知名频次条数

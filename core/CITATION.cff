@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+title: "Arknights Autoplay — Core: 明日方舟自主作战 AI 核心仓库"
+message: "如果你在研究中使用了本项目，请引用本仓库。"
+type: software
+authors:
+  - name: "EricEricEr"
+url: "https://github.com/EricEricEr/ark-autoplay-core"
+license: Apache-2.0
+version: "0.1.0"
+date-released: "2026-10-08"

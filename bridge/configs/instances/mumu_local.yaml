@@ -1,0 +1,16 @@
+# 本机 MuMu 12 实例定义（机器本地配置：路径仅限本机有效，其他机器请以
+# example.yaml 为模板另建实例文件，切勿改动代码常量）。
+name: mumu-local
+adb_host: 127.0.0.1
+adb_port: 16416          # MuMu 12 本实例 ADB 端口
+adb_aliases: [ 7555 ]    # 同一实例亦监听 7555（MuMu 兼容别名，任选其一即可）
+resolution:
+  width: 1920
+  height: 1080
+dpi: 320
+# MuMu 12 安装目录自带 adb（本机路径）
+adb_path: E:/Program Files/Netease/MuMu/nx_main/adb.exe
+# 官方 MAA v6.18.0 发行版安装目录（只读使用：动态加载其 Python 接口，
+# 不复制、不修改目录内任何内容；驱动期间 MAA GUI 保持关闭）
+maa_dir: E:/Users/35151/Desktop/新建文件夹 (5)/MAA-v6.18.0-win-x64
+maa_version: v6.18.0

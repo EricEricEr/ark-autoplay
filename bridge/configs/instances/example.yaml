@@ -1,0 +1,9 @@
+# MuMu 模拟器实例定义示例。
+# instance_pool 启动时按此校验：不符合 1920x1080 / DPI 320 基线的实例拒绝分配。
+name: mumu-0            # 实例名（与 MuMu 多开器中的名称对应）
+adb_host: 127.0.0.1
+adb_port: 16384         # MuMu 12 首个实例的默认 ADB 端口
+resolution:
+  width: 1920
+  height: 1080
+dpi: 320

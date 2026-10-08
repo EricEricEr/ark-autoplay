@@ -1,0 +1,567 @@
+{
+ "_comment": "v1 主线低星作业队列：选自 ak_dataset_v0.1（prts.plus 社区作业导出），筛选 main_00/01 系列、全员 ≤3 星、like≥8、动作步数少、Deploy 均含干员名且关卡在 nav_main.yaml 钳位锚点表内；已离线转换为 MAA 作业形态（maa_job，编队要求省略——MAA 会把 module:0 当硬要求误判 OperatorMissing），来源署名见每条 source.comment。",
+ "jobs": [
+  {
+   "source": {
+    "type": "prts.plus",
+    "job_id": 95540,
+    "title": "序章 黑暗时代·上 - 0-1 - 坍塌",
+    "like": 170,
+    "views": 638,
+    "rating_ratio": 1.0,
+    "upload_time": "2026-06-13T22:19:57",
+    "stage_id_raw": "main_00-01",
+    "lineup_raw": [
+     {
+      "name": "夜刀",
+      "id": "char_502_nblade",
+      "req": {
+       "level": 1
+      }
+     },
+     {
+      "name": "翎羽",
+      "id": "char_192_falco",
+      "req": {
+       "elite": 0,
+       "level": 1,
+       "skill_level": 1
+      }
+     }
+    ],
+    "comment": "来源 prts.plus 作业 #95540（ak_dataset_v0.1 copilot.jsonl），编队要求已置零回放，原始 req 见 lineup_raw"
+   },
+   "maa_job": {
+    "stage_name": "0-1",
+    "opers": [
+     {
+      "name": "夜刀",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "翎羽",
+      "skill": 1,
+      "skill_usage": 0
+     }
+    ],
+    "groups": [],
+    "actions": [
+     {
+      "type": "Deploy",
+      "name": "翎羽",
+      "location": [
+       7,
+       3
+      ],
+      "direction": "Right"
+     },
+     {
+      "type": "SpeedUp"
+     }
+    ],
+    "doc": {
+     "title": "序章 黑暗时代·上 - 0-1 - 坍塌",
+     "details": "来源: prts.plus 作业 #95540（ark-autoplay 数据工厂重放）"
+    },
+    "minimum_required": "v4.0.0"
+   }
+  },
+  {
+   "source": {
+    "type": "prts.plus",
+    "job_id": 48628,
+    "title": "序章 黑暗时代·上 - 0-2 - 守卫",
+    "like": 61,
+    "views": 737,
+    "rating_ratio": 1.0,
+    "upload_time": "2025-03-15T19:22:51",
+    "stage_id_raw": "main_00-02",
+    "lineup_raw": [
+     {
+      "name": "黑角",
+      "id": "char_500_noirc",
+      "req": null
+     }
+    ],
+    "comment": "来源 prts.plus 作业 #48628（ak_dataset_v0.1 copilot.jsonl），编队要求已置零回放，原始 req 见 lineup_raw"
+   },
+   "maa_job": {
+    "stage_name": "0-2",
+    "opers": [
+     {
+      "name": "黑角",
+      "skill": 1,
+      "skill_usage": 0
+     }
+    ],
+    "groups": [],
+    "actions": [
+     {
+      "type": "Deploy",
+      "name": "黑角",
+      "location": [
+       3,
+       2
+      ],
+      "direction": "Right"
+     },
+     {
+      "type": "SpeedUp"
+     }
+    ],
+    "doc": {
+     "title": "序章 黑暗时代·上 - 0-2 - 守卫",
+     "details": "来源: prts.plus 作业 #48628（ark-autoplay 数据工厂重放）"
+    },
+    "minimum_required": "v4.0.0"
+   }
+  },
+  {
+   "source": {
+    "type": "prts.plus",
+    "job_id": 48648,
+    "title": "序章 黑暗时代·上 - 0-10 - 困境",
+    "like": 37,
+    "views": 739,
+    "rating_ratio": 0.9,
+    "upload_time": "2025-03-15T19:43:18",
+    "stage_id_raw": "main_00-10",
+    "lineup_raw": [
+     {
+      "name": "芬",
+      "id": "char_123_fang",
+      "req": null
+     },
+     {
+      "name": "米格鲁",
+      "id": "char_122_beagle",
+      "req": null
+     },
+     {
+      "name": "12F",
+      "id": "char_009_12fce",
+      "req": null
+     },
+     {
+      "name": "巡林者",
+      "id": "char_503_rang",
+      "req": null
+     },
+     {
+      "name": "安赛尔",
+      "id": "char_212_ansel",
+      "req": null
+     }
+    ],
+    "comment": "来源 prts.plus 作业 #48648（ak_dataset_v0.1 copilot.jsonl），编队要求已置零回放，原始 req 见 lineup_raw"
+   },
+   "maa_job": {
+    "stage_name": "0-10",
+    "opers": [
+     {
+      "name": "芬",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "米格鲁",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "12F",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "巡林者",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "安赛尔",
+      "skill": 1,
+      "skill_usage": 0
+     }
+    ],
+    "groups": [],
+    "actions": [
+     {
+      "type": "Deploy",
+      "name": "芬",
+      "location": [
+       8,
+       4
+      ],
+      "direction": "Left"
+     },
+     {
+      "type": "Deploy",
+      "name": "米格鲁",
+      "location": [
+       7,
+       4
+      ],
+      "direction": "Left"
+     },
+     {
+      "type": "Deploy",
+      "name": "巡林者",
+      "location": [
+       9,
+       4
+      ]
+     },
+     {
+      "type": "Deploy",
+      "name": "安赛尔",
+      "location": [
+       8,
+       3
+      ],
+      "direction": "Left"
+     },
+     {
+      "type": "Deploy",
+      "name": "12F",
+      "location": [
+       5,
+       3
+      ],
+      "direction": "Down"
+     },
+     {
+      "type": "SpeedUp"
+     }
+    ],
+    "doc": {
+     "title": "序章 黑暗时代·上 - 0-10 - 困境",
+     "details": "来源: prts.plus 作业 #48648（ark-autoplay 数据工厂重放）"
+    },
+    "minimum_required": "v4.0.0"
+   }
+  },
+  {
+   "source": {
+    "type": "prts.plus",
+    "job_id": 25039,
+    "title": "第一章 黑暗时代·下 - 1-1 - 孤岛",
+    "like": 14,
+    "views": 244,
+    "rating_ratio": 1.0,
+    "upload_time": "2023-08-02T16:13:08",
+    "stage_id_raw": "main_01-01",
+    "lineup_raw": [
+     {
+      "name": "月见夜",
+      "id": "char_283_midn",
+      "req": null
+     },
+     {
+      "name": "克洛丝",
+      "id": "char_124_kroos",
+      "req": null
+     },
+     {
+      "name": "卡缇",
+      "id": "char_209_ardign",
+      "req": null
+     }
+    ],
+    "comment": "来源 prts.plus 作业 #25039（ak_dataset_v0.1 copilot.jsonl），编队要求已置零回放，原始 req 见 lineup_raw"
+   },
+   "maa_job": {
+    "stage_name": "1-1",
+    "opers": [
+     {
+      "name": "月见夜",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "克洛丝",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "卡缇",
+      "skill": 1,
+      "skill_usage": 0
+     }
+    ],
+    "groups": [],
+    "actions": [
+     {
+      "type": "SpeedUp"
+     },
+     {
+      "type": "Deploy",
+      "name": "月见夜",
+      "location": [
+       5,
+       3
+      ],
+      "direction": "Left"
+     },
+     {
+      "type": "Deploy",
+      "name": "卡缇",
+      "location": [
+       4,
+       3
+      ],
+      "direction": "Left"
+     },
+     {
+      "type": "Deploy",
+      "name": "克洛丝",
+      "location": [
+       5,
+       2
+      ],
+      "direction": "Left"
+     }
+    ],
+    "doc": {
+     "title": "第一章 黑暗时代·下 - 1-1 - 孤岛",
+     "details": "来源: prts.plus 作业 #25039（ark-autoplay 数据工厂重放）"
+    },
+    "minimum_required": "v4.0.0"
+   }
+  },
+  {
+   "source": {
+    "type": "prts.plus",
+    "job_id": 25041,
+    "title": "第一章 黑暗时代·下 - 1-3 - 狂奔",
+    "like": 84,
+    "views": 1271,
+    "rating_ratio": 1.0,
+    "upload_time": "2023-08-02T16:23:27",
+    "stage_id_raw": "main_01-03",
+    "lineup_raw": [
+     {
+      "name": "泡普卡",
+      "id": "char_281_popka",
+      "req": null
+     },
+     {
+      "name": "12F",
+      "id": "char_009_12fce",
+      "req": null
+     },
+     {
+      "name": "克洛丝",
+      "id": "char_124_kroos",
+      "req": null
+     },
+     {
+      "name": "黑角",
+      "id": "char_500_noirc",
+      "req": null
+     }
+    ],
+    "comment": "来源 prts.plus 作业 #25041（ak_dataset_v0.1 copilot.jsonl），编队要求已置零回放，原始 req 见 lineup_raw"
+   },
+   "maa_job": {
+    "stage_name": "1-3",
+    "opers": [
+     {
+      "name": "泡普卡",
+      "skill": 1,
+      "skill_usage": 1
+     },
+     {
+      "name": "12F",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "克洛丝",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "黑角",
+      "skill": 1,
+      "skill_usage": 0
+     }
+    ],
+    "groups": [],
+    "actions": [
+     {
+      "type": "SpeedUp"
+     },
+     {
+      "type": "Deploy",
+      "name": "黑角",
+      "location": [
+       1,
+       1
+      ],
+      "direction": "Right"
+     },
+     {
+      "type": "Deploy",
+      "name": "克洛丝",
+      "location": [
+       2,
+       2
+      ],
+      "direction": "Right"
+     },
+     {
+      "type": "Deploy",
+      "name": "泡普卡",
+      "location": [
+       1,
+       5
+      ],
+      "direction": "Right"
+     },
+     {
+      "type": "Deploy",
+      "name": "12F",
+      "location": [
+       3,
+       4
+      ],
+      "direction": "Down"
+     }
+    ],
+    "doc": {
+     "title": "第一章 黑暗时代·下 - 1-3 - 狂奔",
+     "details": "来源: prts.plus 作业 #25041（ark-autoplay 数据工厂重放）"
+    },
+    "minimum_required": "v4.0.0"
+   }
+  },
+  {
+   "source": {
+    "type": "prts.plus",
+    "job_id": 25056,
+    "title": "第一章 黑暗时代·下 - 1-12 - 代价",
+    "like": 76,
+    "views": 1054,
+    "rating_ratio": 1.0,
+    "upload_time": "2023-08-02T21:39:41",
+    "stage_id_raw": "main_01-12",
+    "lineup_raw": [
+     {
+      "name": "克洛丝",
+      "id": "char_124_kroos",
+      "req": null
+     },
+     {
+      "name": "斑点",
+      "id": "char_284_spot",
+      "req": null
+     },
+     {
+      "name": "夜刀",
+      "id": "char_502_nblade",
+      "req": null
+     },
+     {
+      "name": "安赛尔",
+      "id": "char_212_ansel",
+      "req": null
+     },
+     {
+      "name": "Lancet-2",
+      "id": "char_285_medic2",
+      "req": null
+     }
+    ],
+    "comment": "来源 prts.plus 作业 #25056（ak_dataset_v0.1 copilot.jsonl），编队要求已置零回放，原始 req 见 lineup_raw"
+   },
+   "maa_job": {
+    "stage_name": "1-12",
+    "opers": [
+     {
+      "name": "克洛丝",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "斑点",
+      "skill": 1,
+      "skill_usage": 1
+     },
+     {
+      "name": "夜刀",
+      "skill": 1,
+      "skill_usage": 0
+     },
+     {
+      "name": "安赛尔",
+      "skill": 1,
+      "skill_usage": 1
+     },
+     {
+      "name": "Lancet-2",
+      "skill": 1,
+      "skill_usage": 0
+     }
+    ],
+    "groups": [],
+    "actions": [
+     {
+      "type": "SpeedUp"
+     },
+     {
+      "type": "Deploy",
+      "name": "克洛丝",
+      "location": [
+       7,
+       5
+      ],
+      "direction": "Left"
+     },
+     {
+      "type": "Deploy",
+      "name": "夜刀",
+      "location": [
+       7,
+       6
+      ],
+      "direction": "Left"
+     },
+     {
+      "type": "Deploy",
+      "name": "斑点",
+      "location": [
+       3,
+       4
+      ],
+      "direction": "Right"
+     },
+     {
+      "type": "Deploy",
+      "name": "安赛尔",
+      "location": [
+       9,
+       6
+      ],
+      "direction": "Left"
+     },
+     {
+      "type": "Deploy",
+      "name": "Lancet-2",
+      "location": [
+       1,
+       3
+      ],
+      "direction": "Right"
+     }
+    ],
+    "doc": {
+     "title": "第一章 黑暗时代·下 - 1-12 - 代价",
+     "details": "来源: prts.plus 作业 #25056（ark-autoplay 数据工厂重放）"
+    },
+    "minimum_required": "v4.0.0"
+   }
+  }
+ ]
+}

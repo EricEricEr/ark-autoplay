@@ -1,0 +1,44 @@
+# 主线导航固定点位表（1920x1080 / DPI 320 MuMu 基线，2026-10-09 真机校准）。
+#
+# 导航策略 A（v1WIP 实测采用）：逐关固定点位 + 像素校验，不用模板库。
+#   回主界面(快捷导航) → 终端 → 曲谱 → EP00 卡 → 前往章节 → 章节地图
+#   → (目标章>0 时点 EPISODE 下一章) → 锚定滑动到地图钳位端 → 点关卡节点
+#   → 蓝色像素校验“开始行动”在屏（=已到 briefing）。
+#
+# 依据（实测）：地图两端是钳位死端，钳位态坐标完全确定；中端滚动有 ±140px
+# 惯性漂移，故只收录钳位态可见关卡；未收录关卡走节点重试补偿或后续标定。
+baseline: { width: 1920, height: 1080 }
+
+ui:
+  quicknav_icon: [ 403, 58 ]        # 顶栏快捷导航图标（章节地图/briefing/终端均有）
+  quicknav_terminal: [ 791, 156 ]   # 快捷导航浮层 “终端” 项
+  story_tab: [ 478, 1001 ]          # 终端底部 “曲谱” tab
+  saga_card_0: [ 1344, 632 ]        # 曲谱页 EP00 “黑暗时代·上” 卡片（默认滚动位）
+  ep_goto: [ 1670, 918 ]            # 章节 intro “前往章节” 按钮
+  chapter_next: [ 1786, 1018 ]      # 章节地图右下 “EPISODE xx ▶”
+  anchor_swipe_from: [ 1500, 600 ]  # 锚定滑动起点（右扫=向此点反向）
+  anchor_swipe_to: [ 400, 600 ]     # 锚定滑动终点
+  settle_tap: [ 960, 540 ]          # 结算画面 “点击屏幕继续” 安全点位
+  node_retry_offsets:               # 节点点空时的补偿重试偏移（中滚压动漂移兜底）
+    - [ 150, 0 ]
+    - [ -150, 0 ]
+    - [ 0, 80 ]
+    - [ 0, -80 ]
+
+# briefing 到达校验：“开始行动”按钮蓝色像素占比（实测 briefing=0.52，其余界面=0.0）
+brief_blue_check:
+  region: [ 1660, 955, 200, 90 ]    # [x, y, w, h]
+  threshold: 0.25
+
+# 关卡锚点表：anchor=left 用左钳位态（向左滑 anchor_swipes 次），
+# anchor=right 用右钳位态；node 为该钳位态下的节点中心坐标。
+stages:
+  "0-1":  { chapter: 0, anchor: left,  node: [ 950, 515 ] }
+  "0-2":  { chapter: 0, anchor: left,  node: [ 1733, 641 ] }
+  "0-10": { chapter: 0, anchor: right, node: [ 516, 505 ] }
+  "0-11": { chapter: 0, anchor: right, node: [ 950, 505 ] }
+  "1-1":  { chapter: 1, anchor: left,  node: [ 927, 515 ] }
+  "1-2":  { chapter: 1, anchor: left,  node: [ 1373, 510 ] }
+  "1-3":  { chapter: 1, anchor: left,  node: [ 1645, 672 ] }
+  "1-12": { chapter: 1, anchor: right, node: [ 925, 506 ] }
+anchor_swipes: 3                    # 锚定滑动次数（过量滑动到钳位死端为止）

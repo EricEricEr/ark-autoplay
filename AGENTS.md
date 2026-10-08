@@ -17,6 +17,7 @@ src/ark_core/
 ├── training/      # pretrain_ssl / imitate / augment / dagger
 ├── evaluation/    # splits（三档划分+泄漏检查）、runner、report、dispute/（争议重标模板）
 ├── export/        # to_onnx / quantize
+├── datapipe/      # 数据管线 v1（featvec/关卡元数据/作业转换/装置类别词表/低练分桶，ADR-0002）
 └── baselines/     # 随机合法动作等基线
 configs/           # 实验配置（yaml，一实验一配置，禁止代码内超参）
 tests/             # unit / integration / golden（合成样例）/ leak（划分泄漏检查）

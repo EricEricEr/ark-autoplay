@@ -32,6 +32,22 @@
 - 只做"截图 + 模拟输入"，不读内存、不修改游戏客户端。
 - **权利方异议响应｜Takedown commitment**：若鹰角网络或相关权利方对本仓库任何内容提出异议，维护者承诺在收到通知后尽快配合处理（下架、整改或删除），联系渠道为本仓库 Issue。If Hypergryph or any rights holder objects to any content here, maintainers will cooperate promptly upon notice (takedown, remediation or removal). Contact: GitHub Issues.
 
+## 数据管线（datapipe v1）｜Data pipeline quickstart
+
+把本机静态数据源（prts.plus 作业镜像 + 官方数值表，**均不入库**）转换为 featvec / 关卡注册表 / episode 轨迹 / 练度分桶产物（决策记录见 [docs/adr/0002](docs/adr/0002-datapipe-v1.md)）：
+
+```bash
+uv sync
+# 组织数据根（布局见 configs/data.yaml 头部注释），然后指定数据根并构建全部产物：
+export ARK_DATA_ROOT=/path/to/ark_data_root
+uv run python -m ark_core.datapipe.build all
+# 也可分步：featvec | stages | episodes | tiers；--config / --out 可覆盖配置
+```
+
+- 源路径全部走 `configs/data.yaml` + `ARK_DATA_ROOT`（代码内零机器路径）；缺源时报错会列出缺失清单与修复指引。
+- Deploy 非干员名三类 subtype（device / category / unknown_name）的词表在 `configs/deploy_vocab.yaml`（数据即配置）。
+- 产物默认输出到 `<数据根>/processed/`；真实数据产物永不入库（见下方红线）。
+
 ## 相关仓库｜Sibling repositories
 
 | 仓库 | 角色 | 许可证 |

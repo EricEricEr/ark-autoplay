@@ -1,0 +1,182 @@
+# 部署目标词表（datapipe v1）：Deploy 动作里非干员名的形式化分类数据。
+#
+# 背景：prts.plus（MAA copilot）作业的 Deploy 动作 target 是自由文本。除真实干员名外，
+# 社区作业还大量使用三类非干员名，v1 将其形式化为 action subtype（实现见
+# src/ark_core/datapipe/deploy_vocab.py）：
+#   1. device        —— 关卡装置 / 干员召唤物（token），本文件 devices 列表收录；
+#   2. category      —— 类别通配占位符（“奶盾”“单奶”…），categories 小节给出
+#                       中文词 → {profession, sub_hint, position_hint?} 的映射；
+#   3. unknown_name  —— 词表之外的名字，转换时计数并保留原文。
+#
+# TODO(M1): 从本机 level_*.json（关卡文件 token 列表）自动扩充 devices，
+# 把 unknown_name 长尾（当前约 2.6k 个低频名）中的真装置批量吸收进来；
+# categories 维持人工维护的小词表，不做自动扩充。
+
+vocab_version: "0.1.0"
+
+# 别名：作业里的写法 → 官方干员名（解析时先按别名改写，再走干员名解析）
+aliases:
+  麒麟X夜刀: 麒麟R夜刀 # 官方名为 麒麟R夜刀（char_1029_yato2），社区常写作 X
+
+# 关卡装置 / 召唤物 token（带子类型的正名；原始名在 episode 中始终保留）
+devices:
+  # 干员召唤物
+  - 弦惊        # 令的召唤物（作业中常带引号写为“弦惊”，解析管线会去装饰字符）
+  - 逍遥        # 令的召唤物
+  - 清平        # 令的召唤物
+  - 幻影        # 召唤物（如 傀影/塑心 相关）
+  - 打字机      # 鸿雪技能召唤物
+  - 夹子        # 罗宾/霜华 陷阱召唤物（作业常带引号）
+  - 沙地兽      # 卡夫卡召唤物
+  - 狼群        # 夜半/伺夜 狼群
+  - 流形        # 缪尔赛思 流形
+  - 诅咒娃娃    # 巫恋 巫毒娃娃
+  - 磐蟹护卫队  # 豆苗召唤物
+  - 本能的召唤  # 召唤类技能产物
+  - 镜中虚影    # 虚影类召唤物
+  - 重构体      # 干员相关的重构体 token
+  - 龙腾.A      # 龙腾系列召唤物
+  # 关卡装置（地图机制部署物）
+  - 棋子
+  - 水汽汽水瓶  # 多索雷斯机制
+  - 障碍物
+  - 湮灭之相
+  - 点火石
+  - 特制水上平台
+  - 备用木材
+  - 泵站
+  - 阻流阀
+  - 自走车单行道
+  - 伪装工具
+  - 加固装置
+  - 圣徒之手
+  - 风雪之眼
+  - 骑士之徽
+  - 桑特拉
+  - 斯卡蒂的海嗣
+  - 干扰地雷
+  - 爆破装置
+  - 罗德岛临时雇员
+  - 共振装置
+  - 闪亮果实
+  - 防水蚀镀膜装置
+  - 滞空牵引无人机
+  - 封阻加固装置
+  - 封阻物
+  - 眩光手雷
+  - 雪崩触发装置
+  - 结晶消除桩
+  - 便携式补给站
+  - 泡影流大冲击
+  - 雷鸣地雷
+  - 改良型二踢脚
+  - 御龙：岩甲兽
+  - 御龙：反壳龟
+  - 御龙：雷狼龙
+  - 落雪防护装置
+  - 高能源石爆桶
+  - 高能源石炸弹
+  - 干扰装置
+  - 诡雷布设装置
+  - 小帮手
+  - 移动摄影器
+  - 工程蓄水炮
+  - 指挥中心
+  - 梅什科线圈
+  - 束缚铁虫丝
+  - 不完全充能反击
+  - 阿勒黛的卫护
+  - 迎宾踏垫
+  - 雪雉的安全起重机
+  - 高压脉冲诡雷
+  - 投递坐标
+  - 勘探器
+  - 临时掩护装置
+  - 枯朽祭坛
+  - 轰隆隆先生
+  - 斩
+  # 画中画字类装置（邪魔事件机制）
+  - 兵字
+  - 山字
+  - 食字
+  - 财字
+
+# 类别通配占位符：terms 命中时给规范的职业 / 子职业提示。
+# profession 取 8 个干员大职业，null 表示跨职业的功能性站位描述；
+# sub_hint 尽量与 character_table 的 subProfessionId 对齐，any 表示该职业不限子职业；
+# position_hint 额外给出高台 / 地面约束（MELEE=地面，RANGED=高台），可缺省。
+categories:
+  # —— 重装 ——
+  - {id: tank_any, terms: [盾, 坦克, 重装, 硬盾, 铁盾, 防御盾, 肉盾, 挡3盾, 挡三盾, 任意盾], profession: TANK, sub_hint: any}
+  - {id: tank_protector, terms: [铁卫, 重装-铁卫], profession: TANK, sub_hint: protector}
+  - {id: tank_guardian, terms: [奶盾, 守护者, 大奶盾, 重装-守护者, 盾奶], profession: TANK, sub_hint: guardian}
+  - {id: tank_unyield, terms: [不屈者, 重装-不屈者], profession: TANK, sub_hint: unyield}
+  - {id: tank_fortress, terms: [要塞], profession: TANK, sub_hint: fortress}
+  - {id: tank_duelist, terms: [决战者], profession: TANK, sub_hint: duelist}
+  - {id: tank_shotprotector, terms: [哨戒铁卫, 枪盾], profession: TANK, sub_hint: shotprotector}
+  # —— 医疗 ——
+  - {id: medic_any, terms: [奶, 奶妈, 医疗, 治疗, 医疗师, 任意奶], profession: MEDIC, sub_hint: any}
+  - {id: medic_physician, terms: [单奶, 医师, 医疗-医师, 任意单奶], profession: MEDIC, sub_hint: physician}
+  - {id: medic_ringhealer, terms: [群奶, 群愈师, 医疗-群愈师], profession: MEDIC, sub_hint: ringhealer}
+  - {id: medic_wandermedic, terms: [行医, 元素奶, 医疗-行医, 元素], profession: MEDIC, sub_hint: wandermedic}
+  - {id: medic_healer, terms: [疗养师, 医疗-疗养师, 广域奶, 抵抗奶, 大范围奶], profession: MEDIC, sub_hint: healer}
+  - {id: medic_ground, terms: [地面奶], profession: MEDIC, sub_hint: any, position_hint: MELEE}
+  # —— 先锋 ——
+  - {id: pioneer_any, terms: [先锋, 拦人先锋, 回费, 回费先锋], profession: PIONEER, sub_hint: any}
+  - {id: pioneer_pioneer, terms: [尖兵, 先锋-尖兵, 挡二先锋, 挡2先锋], profession: PIONEER, sub_hint: pioneer}
+  - {id: pioneer_bearer, terms: [执旗手, 投锋, 投降先锋, 先锋-执旗手], profession: PIONEER, sub_hint: bearer}
+  - {id: pioneer_charger, terms: [冲锋手, 先锋-冲锋手, 撤退回费先锋], profession: PIONEER, sub_hint: charger}
+  - {id: pioneer_tactician, terms: [战术家, 高台先锋], profession: PIONEER, sub_hint: tactician}
+  # —— 狙击 ——
+  - {id: sniper_any, terms: [狙击, 狙, 射手], profession: SNIPER, sub_hint: any, position_hint: RANGED}
+  - {id: sniper_fastshot, terms: [速狙, 速射手, 狙击-速射手, 速射], profession: SNIPER, sub_hint: fastshot, position_hint: RANGED}
+  - {id: sniper_aoesniper, terms: [群狙, 炮手], profession: SNIPER, sub_hint: aoesniper, position_hint: RANGED}
+  - {id: sniper_longrange, terms: [神射手, 远狙], profession: SNIPER, sub_hint: longrange, position_hint: RANGED}
+  - {id: sniper_closerange, terms: [重射手, 近狙], profession: SNIPER, sub_hint: closerange, position_hint: RANGED}
+  - {id: sniper_siegesniper, terms: [攻城手], profession: SNIPER, sub_hint: siegesniper, position_hint: RANGED}
+  - {id: sniper_bombarder, terms: [投掷手], profession: SNIPER, sub_hint: bombarder, position_hint: RANGED}
+  # —— 术师 ——
+  - {id: caster_any, terms: [术士, 术师, 法师, 法], profession: CASTER, sub_hint: any, position_hint: RANGED}
+  - {id: caster_corecaster, terms: [单法, 中坚术师, 中坚术士, 术师-中坚术师], profession: CASTER, sub_hint: corecaster, position_hint: RANGED}
+  - {id: caster_splashcaster, terms: [群法, 扩散术师], profession: CASTER, sub_hint: splashcaster, position_hint: RANGED}
+  - {id: caster_chain, terms: [链术师], profession: CASTER, sub_hint: chain, position_hint: RANGED}
+  - {id: caster_blastcaster, terms: [轰击术师, 术师-轰击术师], profession: CASTER, sub_hint: blastcaster, position_hint: RANGED}
+  - {id: caster_funnel, terms: [驭械术师, 术师-驭械术师], profession: CASTER, sub_hint: funnel, position_hint: RANGED}
+  - {id: caster_phalanx, terms: [阵法术师], profession: CASTER, sub_hint: phalanx, position_hint: RANGED}
+  - {id: caster_mystic, terms: [秘术师], profession: CASTER, sub_hint: mystic, position_hint: RANGED}
+  # —— 近卫 ——
+  - {id: warrior_any, terms: [近卫, 打人近卫], profession: WARRIOR, sub_hint: any, position_hint: MELEE}
+  - {id: warrior_lord, terms: [领主, 远卫, 近卫-领主], profession: WARRIOR, sub_hint: lord, position_hint: MELEE}
+  - {id: warrior_centurion, terms: [强攻手, 群卫, 近卫-强攻手], profession: WARRIOR, sub_hint: centurion, position_hint: MELEE}
+  - {id: warrior_fighter, terms: [斗士, 近卫-斗士], profession: WARRIOR, sub_hint: fighter, position_hint: MELEE}
+  - {id: warrior_sword, terms: [剑豪], profession: WARRIOR, sub_hint: sword, position_hint: MELEE}
+  - {id: warrior_fearless, terms: [无畏者, 剑圣], profession: WARRIOR, sub_hint: fearless, position_hint: MELEE}
+  - {id: warrior_musha, terms: [武者, 绝食], profession: WARRIOR, sub_hint: musha, position_hint: MELEE}
+  - {id: warrior_reaper, terms: [收割者], profession: WARRIOR, sub_hint: reaper, position_hint: MELEE}
+  - {id: warrior_librator, terms: [解放者, 近卫-解放者], profession: WARRIOR, sub_hint: librator, position_hint: MELEE}
+  - {id: warrior_crusher, terms: [重剑手], profession: WARRIOR, sub_hint: crusher, position_hint: MELEE}
+  - {id: warrior_artsfghter, terms: [术战者], profession: WARRIOR, sub_hint: artsfghter, position_hint: MELEE}
+  - {id: warrior_instructor, terms: [教官], profession: WARRIOR, sub_hint: instructor, position_hint: MELEE}
+  # —— 辅助 ——
+  - {id: support_any, terms: [辅助, 辅助-常态], profession: SUPPORT, sub_hint: any, position_hint: RANGED}
+  - {id: support_slower, terms: [凝滞师, 减速辅助, 减速], profession: SUPPORT, sub_hint: slower, position_hint: RANGED}
+  - {id: support_ritualist, terms: [巫役, 辅助-巫役], profession: SUPPORT, sub_hint: ritualist, position_hint: RANGED}
+  - {id: support_summoner, terms: [召唤师], profession: SUPPORT, sub_hint: summoner, position_hint: RANGED}
+  - {id: support_bard, terms: [吟游者], profession: SUPPORT, sub_hint: bard, position_hint: RANGED}
+  - {id: support_craftsman, terms: [工匠], profession: SUPPORT, sub_hint: craftsman, position_hint: MELEE}
+  - {id: support_blessing, terms: [护佑者], profession: SUPPORT, sub_hint: blessing, position_hint: RANGED}
+  # —— 特种 ——
+  - {id: special_any, terms: [特种], profession: SPECIAL, sub_hint: any}
+  - {id: special_executor, terms: [快活, 快速复活, 处决者, 特种-处决者, 突袭快活, 插拔干员], profession: SPECIAL, sub_hint: executor}
+  - {id: special_pusher, terms: [推击手, 推, 推击, 推人特种], profession: SPECIAL, sub_hint: pusher, position_hint: MELEE}
+  - {id: special_hookmaster, terms: [钩索师, 钩子, 拉], profession: SPECIAL, sub_hint: hookmaster, position_hint: MELEE}
+  - {id: special_stalker, terms: [地刺, 伏击客, 特种-伏击客], profession: SPECIAL, sub_hint: stalker, position_hint: MELEE}
+  - {id: special_dollkeeper, terms: [傀儡师], profession: SPECIAL, sub_hint: dollkeeper, position_hint: MELEE}
+  - {id: special_traper, terms: [陷阱师], profession: SPECIAL, sub_hint: traper, position_hint: RANGED}
+  - {id: special_merchant, terms: [行商], profession: SPECIAL, sub_hint: merchant, position_hint: MELEE}
+  # —— 跨职业功能性描述（profession 为 null）——
+  - {id: generic_dps, terms: [输出, 补输出, 补伤害], profession: null, sub_hint: dps}
+  - {id: generic_utility, terms: [工具人], profession: null, sub_hint: utility}
+  - {id: generic_robot, terms: [小车], profession: null, sub_hint: robot}
+  - {id: pos_melee, terms: [地面, 阻挡, 守门], profession: null, sub_hint: any, position_hint: MELEE}
+  - {id: pos_ranged, terms: [高台, 高台核, 高台输出], profession: null, sub_hint: any, position_hint: RANGED}

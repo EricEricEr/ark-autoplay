@@ -30,6 +30,7 @@
 - 本项目与鹰角网络（Hypergryph）**无任何关系**，为研究性质的**非官方**社区项目。
 - 本仓库**不分发**任何游戏截图、立绘、地图素材或解包数据（版权归鹰角网络）；`data/` 目录只放 schema 说明与合成样例，真实轨迹与截图**永不入库**（详见 [data/README.md](data/README.md)）。
 - 只做"截图 + 模拟输入"，不读内存、不修改游戏客户端。
+- **权利方异议响应｜Takedown commitment**：若鹰角网络或相关权利方对本仓库任何内容提出异议，维护者承诺在收到通知后尽快配合处理（下架、整改或删除），联系渠道为本仓库 Issue。If Hypergryph or any rights holder objects to any content here, maintainers will cooperate promptly upon notice (takedown, remediation or removal). Contact: GitHub Issues.
 
 ## 相关仓库｜Sibling repositories
 

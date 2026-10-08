@@ -17,6 +17,22 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1.380",
 ]
+# 训练依赖单独成组：CI 与数据管线不需要 torch（保持 CI 轻量、纯逻辑单测秒级完成）
+# 安装：uv sync --group train
+train = [
+    "torch>=2.11",
+    "numpy>=2.0",
+]
+
+# PyTorch CUDA 12.8 轮子索引（本机 RTX 4060 实测可用；explicit=true 表示
+# 该索引只服务下方 sources 显式映射的包，不影响其它依赖的解析源）
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
 
 [build-system]
 requires = ["hatchling"]

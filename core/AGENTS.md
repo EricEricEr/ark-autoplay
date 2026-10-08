@@ -34,6 +34,19 @@ docs/              # rfc/（协议）、adr/（决策记录）、评测报告
 | `uv run ruff check` | lint 检查 |
 | `uv run pyright` | 类型检查 |
 
+**训练依赖是独立可选的 `train` 组**（torch + numpy，约 2.5GB）：
+
+| 命令 | 用途 |
+|---|---|
+| `uv sync --group train` | 额外安装训练依赖（CI 与数据管线**不需要**，保持门禁轻量） |
+| `$env:ARK_ML_ROOT="<数据根>"` | 训练管线所有输入/输出路径的根（机器路径不入库） |
+| `uv run python -m ark_core.training.run build` | 构建模仿学习数据集（episodes → npz） |
+| `uv run python -m ark_core.training.run train` | 训练 track_a（配置见 `configs/imitation_v0.yaml`） |
+
+torch 缺失时 `tests/unit/test_imitation.py` 自动 skip，故未装 train 组也能跑全部门禁。
+训练任务定义、指标口径与**能力边界**见 `docs/adr/0005-imitation-v0.md`（v0 无战场状态，
+不是自主作战，不得如此表述）。
+
 ## 代码风格
 
 - lint 强制走 ruff（配置见 `pyproject.toml`），提交前本地先跑 `uv run ruff check`。

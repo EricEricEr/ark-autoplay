@@ -1,0 +1,64 @@
+# 模仿学习 v0 实验配置（无战场状态版）
+#
+# 任务：P(a_t | 关卡静态特征, 编队, a_<t)  —— 见 src/ark_core/training/imitation_data.py
+# 说明：这不是方案 §8 的 P(a_t | state_t)。当前重放未落盘战场数值状态（费用/击杀/技力），
+#       故先用「关卡特征 + 编队 + 动作历史」作为局势代理，把训练链路与张量形状钉死。
+#       状态感知层就绪后，只需向实体集注入新 token 类型，网络结构无需重写。
+#
+# 划分纪律（方案 §12 最高准则）：**按关卡家族划分，严禁按对局随机划分**。
+#
+# 路径解析（红线：机器路径不入库）
+# ------------------------------
+# 所有路径以 ${ARK_ML_ROOT} 为根，由环境变量提供；未设置时回退到仓库根，
+# 此时通常找不到数据源（真实数据本就不入库），报错会指出缺失路径。
+#   PowerShell:  $env:ARK_ML_ROOT = "E:\path\to\your\workdir"
+#   bash:        export ARK_ML_ROOT=/path/to/your/workdir
+# 目录约定：
+#   <root>/processed/          datapipe 产物（episodes_v0.jsonl / stagefeat.parquet / ...）
+#   <root>/imitation_v0.npz    本管线构建的数据集
+#   <root>/runs/               训练输出（checkpoint / 报告）
+
+experiment:
+  name: imitation_v0
+  seed: 42
+  device: cuda
+
+data:
+  root: "${ARK_ML_ROOT}"
+  processed_dir: "${ARK_ML_ROOT}/processed"
+  episodes_jsonl: "${ARK_ML_ROOT}/processed/episodes_v0.jsonl"
+  dataset_npz: "${ARK_ML_ROOT}/imitation_v0.npz"
+  vocab_top_k: 256
+  limit: null            # 调试用：只取前 N 局（null = 全量）
+
+  # 真·零样本留出：整族留出，训练时完全不出现其关卡
+  holdout_families:
+    - act33side          # 活动家族
+    - act27side
+    - main_13            # 整章主线
+
+model:
+  hidden_dim: 256
+  num_layers: 4
+  num_dec_layers: 2
+  num_heads: 8
+  dropout: 0.1
+
+training:
+  stage: imitate
+  epochs: 12
+  batch_size: 32
+  lr: 3.0e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_train_batches: 64   # train 档评测抽样（holdout 恒全量）
+  # 损失权重：cell/dir 只在 deploy 上计算（见 imitate.compute_loss）
+  w_type: 1.0
+  w_target: 1.0
+  w_cell: 1.0
+  w_dir: 0.5
+
+evaluation:
+  runs_dir: "${ARK_ML_ROOT}/runs"
+  # 对外只报 holdout（真·零样本）；train 档仅用于诊断过拟合
+  report_tiers: [holdout]

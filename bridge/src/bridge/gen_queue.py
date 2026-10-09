@@ -33,15 +33,27 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from bridge.maa_stages import has_map_data, load_tile_keys
+from bridge.maa_stages import (
+    fight_accepts,
+    has_map_data,
+    load_maa_tasks,
+    load_tile_keys,
+)
 
 LOW_TIERS = ("all_low_rarity", "single_core_budget")
 """低练桶：优先收录（实际更容易通关）。"""
+
+_ASCII_CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-_]*")
+"""合法关卡代号形态（ASCII 字母数字开头，可含 - 和 _）。
+
+用于剔除数据集里 code 为中文的关卡（如 camp_01 → '乌萨斯'）。
+"""
 
 
 def load_stage_index(dataset: Path) -> dict[str, dict[str, Any]]:
@@ -80,16 +92,22 @@ def build_queue(
     nav_filter: bool,
     operbox_path: Path | None = None,
     max_missing: int | None = None,
+    require_fight: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """构建队列，返回 ``(entries, stats)``。
 
     ``operbox_path`` + ``max_missing`` 给出时启用**干员可达过滤**：
     只保留"账号 + ``max_missing`` 个助战"能凑齐阵容的作业。
+
+    ``require_fight=True`` 时额外要求关卡能被 ``Fight`` 接受——
+    即只收主线/高难/支线（实测可接受率 100%），排除活动关/剿灭/物资筹备
+    （实测 0%）。**当前导航走 ``Fight(nav_only)``，故本项应开启**（见 ADR-0007）。
     """
     from bridge.replay_controller import dataset_record_to_job_entry
 
     stage_idx = load_stage_index(dataset)
     tile_keys = load_tile_keys(maa_dir) if (nav_filter and maa_dir) else set()
+    maa_tasks = load_maa_tasks(maa_dir) if (require_fight and maa_dir) else set()
 
     # 账号拥有的干员名（用于可达过滤）
     owned: set[str] = set()
@@ -129,9 +147,20 @@ def build_queue(
                 cnt["too_long"] += 1
                 continue
             code = str(st["code"])
+            # 关卡名必须是 ASCII 代号才能下发。
+            # 实测数据集里 54 个关卡的 code 是中文而非代号，例如
+            #   camp_01 → '乌萨斯'（剿灭，36 个）、act1vautochess_m01 → '新手模式'、
+            #   guide_01 → '???'。直接当关卡名下发必然失败（见 ADR-0007 约束 C）。
+            if not _ASCII_CODE_RE.fullmatch(code):
+                cnt["code_not_ascii"] += 1
+                continue
             # 地图数据过滤（Copilot 能否处理的权威判据）
             if not has_map_data(sid, code, tile_keys):
                 cnt["no_map_data"] += 1
+                continue
+            # Fight 可接受过滤（当前导航走 Fight(nav_only)，故需开启）
+            if require_fight and not fight_accepts(code, maa_tasks):
+                cnt["fight_rejects"] += 1
                 continue
             # 干员可达过滤（可选）：账号 + 助战能否凑齐阵容
             if owned and max_missing is not None:
@@ -240,6 +269,13 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="允许缺几名干员（默认 1 = 可借 1 个助战；0 = 必须全靠自己）",
     )
+    ap.add_argument(
+        "--require-fight",
+        action="store_true",
+        help="只收 Fight 可接受的关卡（主线/高难/支线）。"
+        "当前导航走 Fight(nav_only)，**应开启**——否则活动关/剿灭/"
+        "物资筹备会因 Fight 拒收而必然失败（见 ADR-0007）",
+    )
     args = ap.parse_args(argv)
 
     jobs, stats = build_queue(
@@ -253,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
         nav_filter=not args.no_nav_filter,
         operbox_path=Path(args.operbox) if args.operbox else None,
         max_missing=args.max_missing,
+        require_fight=args.require_fight,
     )
     doc = {
         "note": (

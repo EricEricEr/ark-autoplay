@@ -225,6 +225,11 @@ data/large/
 logs/
 *.parquet
 
+# MAA 运行时调试产物（map/*.jpeg 等）——运行期生成，不入库。
+# 注意：MAA 的 debug 目录会落在**进程工作目录**下，从 bridge/ 启动时会生成
+# bridge/debug/；从别处启动则生成在别处，故此处按路径忽略。
+debug/
+
 # MaaCore 上游源码树：不入库（1.2GB+）。
 # 上游代码由 scripts/fetch_maacore.* 按 maacore/UPSTREAM.json 记录的 commit 重建，
 # 仓库只保存「上游 commit pin + patches/ 中的本地改动」，见 maacore/README.md。

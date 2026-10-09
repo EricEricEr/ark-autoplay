@@ -43,7 +43,7 @@ from typing import Any
 from bridge.battle_state import battle_state_to_record, summarize_states
 from bridge.episode_writer import EpisodeWriter
 from bridge.maa_driver import MaaDriver, load_instance_config
-from bridge.navigator import NavigationError, Navigator
+from bridge.nav_maa import MaaNativeNavigator, NavigationError
 from bridge.state_logger import StateLogger
 
 # 数据集动作类型 → MAA 作业动作白名单（其余如 Output/MoveCamera 丢弃）
@@ -159,7 +159,9 @@ class ReplayController:
         maa_user = self._work / "debug" / "maa_user"
         maa_user.mkdir(parents=True, exist_ok=True)
         self._driver = MaaDriver(load_instance_config(instance_cfg_path), maa_user)
-        self._nav = Navigator(self._driver, Navigator.load_nav_config(nav_cfg_path))
+        # 导航改用 MAA 原生任务（见 docs/adr/0002）：自建几何导航器已被实测证否。
+        # nav_cfg_path 仅保留签名兼容，几何标定表不再使用。
+        self._nav = MaaNativeNavigator(self._driver)
         self._writer = EpisodeWriter(self._work)
 
     def _write_maa_job(self, entry: dict[str, Any]) -> Path:
@@ -203,11 +205,24 @@ class ReplayController:
             )
 
         try:
-            self._nav.goto_stage_briefing(stage_code)
+            nav = self._nav.goto_stage_briefing(stage_code)
         except NavigationError as exc:
             print(f"[job {job_id}] 导航失败: {exc}", flush=True)
             summary.update(ok=False, error=f"nav: {exc}")
             return summary
+        if not nav.ok:
+            print(
+                f"[job {job_id}] 导航未到位（{nav.elapsed_s}s，"
+                f"任务序列={nav.tasks_seen}）",
+                flush=True,
+            )
+            summary.update(ok=False, error="nav: 未到准备界面")
+            return summary
+        print(
+            f"[job {job_id}] ✓ 已到准备界面（{nav.elapsed_s}s，"
+            f"标志={nav.ready_task}，抢停={nav.stopped}）",
+            flush=True,
+        )
 
         run_dir = self._writer.begin(stage_id, job_id)
         job_file = self._write_maa_job(entry)
@@ -270,20 +285,14 @@ class ReplayController:
             f"[job {job_id}] 任务链收尾={terminal} 动作事件={seen_actions}", flush=True
         )
 
-        # 作战自然结束 + 结算推进：链收尾≠作战结束，轮询蓝钮回到 briefing
+        # 作战自然结束 + 结算推进：链收尾≠作战结束。
+        # 交给 MAA 的 StartUp 回主界面——它会自己识别并处理结算/公告等弹窗，
+        # 不依赖像素阈值（原做法是轮询蓝钮像素点屏幕，已随自建导航一并废弃）。
         logger.set_active(False)
         result_files: list[str] = []
-        settle_deadline = time.monotonic() + _SETTLE_TIMEOUT_S
-        settled = False
-        while time.monotonic() < settle_deadline:
-            time.sleep(3.0)
-            rel = logger.snap("settle")
-            result_files.append(rel)
-            if self._nav.briefing_open():
-                settled = True
-                break
-            x, y = self._nav._ui["settle_tap"]
-            self._driver.tap(int(x), int(y))
+        rel = logger.snap("settle")
+        result_files.append(rel)
+        settled = self._nav.wait_battle_settle(timeout_s=_SETTLE_TIMEOUT_S)
         logger.stop()
         fresh, cursor = self._driver.events_since(cursor)
         for evt in fresh:

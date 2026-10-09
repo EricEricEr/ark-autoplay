@@ -1,115 +1,102 @@
-"""MaaNativeNavigator 单测：只测纯逻辑（不连真机、不装 MAA）。
+"""CopilotRunner / 代理护栏 单测（纯逻辑，不连真机）。
 
-导航本身依赖 MAA 与模拟器，无法在单测里跑；这里覆盖的是**判定逻辑与安全约束**：
-- 准备界面标志的识别（按任务名，而非像素）；
-- Fight 参数必须禁用付费资源消耗（碎石）与自动嗑药；
-- 未到位时不抛异常，而是返回 ok=False（便于批量流程继续）。
+背景（重要，勿重蹈）：曾用 MAA 的 ``Fight`` 任务做导航，但实测它会走进
+**游戏内代理作战**（``Fight@PRTS1`` 出现 13 次，``PrtsErrorConfirm`` 4 次），
+而自抽号的代理记录是号商机械刷出的异常数值、对训练无价值。故改为
+``Copilot`` 路径（自带导航 + 显式 ``NotUsePrts``）。
+
+本测试覆盖：
+1. 代理护栏能识别 ``UsePrts``/``PRTS1`` 等任务名（**尾段匹配**，因 MAA 报的是
+   ``Fight@UsePrts`` 这种带链前缀的形式）；
+2. 正常 Copilot 路径不误报；
+3. CopilotRunner 的终态判定、超时行为与参数透传。
 """
 
 from __future__ import annotations
 
-import pytest
-
-from bridge.nav_maa import (
-    FIGHT_PARAMS_SAFE,
-    READY_TASKS,
-    MaaNativeNavigator,
-    NavigationError,
-)
+from bridge.nav_maa import PRTS_TASKS, CopilotRunner
 
 
 class _FakeDriver:
-    """假驱动：按脚本回放事件，用于测导航判定逻辑。"""
+    """假驱动：按脚本回放事件。"""
 
-    def __init__(self, task_sequence: list[str], append_ret: int = 1) -> None:
-        self._seq = task_sequence
+    def __init__(self, tasks: list[str], append_ret: int = 1) -> None:
+        self._tasks = tasks
         self._append_ret = append_ret
         self._cursor = 0
-        self.stopped = False
-        self.appended: list[tuple[str, dict]] = []
+        self.appended: list[tuple[str, str, bool]] = []
 
-    def append_task(self, task_type: str, params: dict | None = None) -> int:
-        self.appended.append((task_type, params or {}))
+    def append_copilot(self, job_path, formation: bool = True) -> int:
+        self.appended.append((str(job_path), "Copilot", formation))
         return self._append_ret
 
     def mark(self) -> int:
         return self._cursor
 
     def events_since(self, mark: int):
-        # 每次把剩余任务当成新事件吐出来
         out = []
-        while self._cursor < len(self._seq):
-            name = self._seq[self._cursor]
+        while self._cursor < len(self._tasks):
+            raw = self._tasks[self._cursor]
             self._cursor += 1
-            fake_evt = type(
-                "E", (), {"msg": "SubTaskStart", "details": {"task": name}}
-            )()
-            out.append(fake_evt)
+            if raw == "__DONE__":
+                done = type(
+                    "E", (), {"msg": "TaskChainCompleted", "details": {}}
+                )()
+                out.append(done)
+                continue
+            # 模拟 MAA 真实格式：cur_task 形如 "Fight@UsePrts"
+            out.append(
+                type("E", (), {"msg": "SubTaskStart", "details": {"cur_task": raw}})()
+            )
         return out, self._cursor
 
     def start(self) -> bool:
         return True
 
-    def stop(self) -> bool:
-        self.stopped = True
-        return True
+
+def test_prts_tasks_covers_the_observed_ones() -> None:
+    """护栏必须覆盖实测观察到的代理任务名（否则等于没护栏）。"""
+    for t in ("UsePrts", "PRTS1", "PRTS2", "PRTS3", "PrtsErrorConfirm"):
+        assert t in PRTS_TASKS, f"{t} 必须被护栏覆盖（实测出现过）"
 
 
-def test_ready_tasks_include_start_button() -> None:
-    """到位判定必须包含 StartButton1（实测该步 score=1.000，即"开始行动"按钮）。
-
-    用**任务名**判定而非像素阈值，是 ADR-0002 的核心决策。
-    """
-    assert "StartButton1" in READY_TASKS
-
-
-def test_fight_params_forbid_paid_resources() -> None:
-    """Fight 参数必须禁用药与碎石——付费资源绝不允许自动消耗。"""
-    assert FIGHT_PARAMS_SAFE["stone"] == 0, "禁止自动碎石（付费资源）"
-    assert FIGHT_PARAMS_SAFE["medicine"] == 0, "禁止自动使用理智药"
-    assert FIGHT_PARAMS_SAFE["times"] == 1, "单次执行，避免连打"
-
-
-def test_navigator_stops_immediately_on_ready_task() -> None:
-    """一旦出现到位标志，必须立刻 stop（避免 MAA 继续点"开始行动"开战）。"""
+def test_runner_detects_prts_contamination() -> None:
+    """出现 Fight@UsePrts / Fight@PRTS1 时必须标记污染（尾段匹配）。"""
     drv = _FakeDriver(
-        ["StageBegin", "Fight", "ClickStageName", "StartButton1", "FightBegin"]
+        ["Copilot@BattleStartPre", "Fight@UsePrts", "Fight@PRTS1", "__DONE__"]
     )
-    nav = MaaNativeNavigator(drv, timeout_s=5.0)  # type: ignore[arg-type]
-    res = nav.goto_stage_briefing("0-2")
+    res = CopilotRunner(drv, timeout_s=5.0).run_job("job.json")  # type: ignore[arg-type]
     assert res.ok is True
-    assert res.ready_task == "StartButton1"
-    assert res.stopped is True
-    assert drv.stopped is True
-    # 不应把后续任务也消费掉（说明及时中断）
-    assert "FightBegin" not in res.tasks_seen
+    assert "UsePrts" in res.prts_detected
+    assert "PRTS1" in res.prts_detected
 
 
-def test_navigator_reports_not_ok_on_timeout() -> None:
-    """未到位时返回 ok=False（不抛异常），便于批量流程记摘要后继续。"""
-    drv = _FakeDriver(["StageBegin", "Fight"])
-    nav = MaaNativeNavigator(drv, timeout_s=0.3)  # type: ignore[arg-type]
-    res = nav.goto_stage_briefing("0-2")
+def test_runner_clean_path_has_no_prts_flag() -> None:
+    """正常 Copilot 路径不得误报污染（用 BattleStartPre/QuickFormation 链）。"""
+    drv = _FakeDriver(
+        [
+            "Copilot@BattleStartPre",
+            "Copilot@BattleQuickFormation",
+            "Copilot@BattleStartAll",
+            "Copilot@BattleProcessTask",
+            "__DONE__",
+        ]
+    )
+    res = CopilotRunner(drv, timeout_s=5.0).run_job("job.json")  # type: ignore[arg-type]
+    assert res.ok is True
+    assert res.prts_detected == [], "正常路径不应出现代理标记"
+
+
+def test_runner_reports_timeout_as_not_ok() -> None:
+    """任务链不结束时 ok=False（不抛异常，便于批量流程继续）。"""
+    drv = _FakeDriver(["Copilot@BattleStartPre"])
+    res = CopilotRunner(drv, timeout_s=0.3).run_job("job.json")  # type: ignore[arg-type]
     assert res.ok is False
-    assert res.ready_task is None
-    assert drv.stopped is True, "超时也应主动停掉，避免任务继续跑"
+    assert res.terminal is None
 
 
-def test_navigator_raises_when_append_rejected() -> None:
-    """append_task 返回 0（参数被拒）时抛 NavigationError。"""
-    drv = _FakeDriver([], append_ret=0)
-    nav = MaaNativeNavigator(drv, timeout_s=1.0)  # type: ignore[arg-type]
-    with pytest.raises(NavigationError):
-        nav.goto_stage_briefing("0-2")
-
-
-def test_navigator_passes_safe_params_and_stage() -> None:
-    """下发的 Fight 任务必须带上安全参数与目标关卡。"""
-    drv = _FakeDriver(["StartButton1"])
-    nav = MaaNativeNavigator(drv, timeout_s=2.0)  # type: ignore[arg-type]
-    nav.goto_stage_briefing("1-7")
-    assert drv.appended, "应下发任务"
-    task_type, params = drv.appended[0]
-    assert task_type == "Fight"
-    assert params["stage"] == "1-7"
-    assert params["stone"] == 0
+def test_runner_passes_job_path_and_formation() -> None:
+    """作业路径与 formation 参数须透传给 append_copilot。"""
+    drv = _FakeDriver(["__DONE__"])
+    CopilotRunner(drv, timeout_s=2.0).run_job("j.json", formation=False)  # type: ignore[arg-type]
+    assert drv.appended == [("j.json", "Copilot", False)]

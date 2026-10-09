@@ -43,7 +43,7 @@ from typing import Any
 from bridge.battle_state import battle_state_to_record, summarize_states
 from bridge.episode_writer import EpisodeWriter
 from bridge.maa_driver import MaaDriver, load_instance_config
-from bridge.nav_maa import MaaNativeNavigator, NavigationError
+from bridge.nav_maa import PRTS_TASKS, wait_settle
 from bridge.state_logger import StateLogger
 
 # 数据集动作类型 → MAA 作业动作白名单（其余如 Output/MoveCamera 丢弃）
@@ -57,11 +57,31 @@ _SETTLE_TIMEOUT_S = 300.0
 
 
 def stage_id_to_code(stage_id: str) -> str:
-    """数据集 stage_id → 游戏短码：``main_00-01`` → ``0-1``（v1 仅主线）。"""
-    m = re.fullmatch(r"main_(\d{2})-(\d{2})", stage_id)
-    if not m:
-        raise ValueError(f"v1 不支持的 stage_id: {stage_id}")
-    return f"{int(m.group(1))}-{int(m.group(2))}"
+    """数据集 stage_id → 游戏关卡短码（MAA ``Fight`` 的 ``stage`` 参数）。
+
+    **优先**用数据集 ``stages.jsonl`` 的 ``code`` 字段（权威、覆盖全部类型）；
+    本函数只在拿不到 code 时按 stage_id 兜底推断。
+
+    历史（重要，别重蹈）：本函数原为
+    ``re.fullmatch(r"main_(\\d{2})-(\\d{2})")``，**只接受两位数的主线关卡**，
+    其余直接抛 ``ValueError``——这使活动关（占数据集 71%）根本无法进队列，
+    是"队列只有 6 条"的代码级根因（2026-10-09 查明）。
+
+    现在支持的类型（依 ``stages.jsonl`` 的 ``type``）：
+    - ``MAIN``：``main_00-01`` → ``0-1``（去掉前导零）
+    - ``ACTIVITY``/``SUB``/``CAMPAIGN``/``DAILY``/``CLIMB_TOWER``/``GUIDE``：
+      形如 ``act33side_01``、``sub_03-1-1``、``camp_01``、``wk_melee_1``——
+      这些 **stage_id 本身往往就是 MAA 认的关名**（或与 code 一致），故原样返回，
+      不再用正则拒绝。
+
+    ⚠️ 关卡能否被 MAA 导航，取决于 MAA 资源版本与账号进度，**不由本函数保证**；
+    无法导航时 ``Fight`` 任务会失败，由导航层如实记录（不静默跳过）。
+    """
+    m = re.fullmatch(r"main_(\d+)-(\d+)(#.*)?", stage_id)
+    if m:
+        return f"{int(m.group(1))}-{int(m.group(2))}"
+    # 非 main_ 前缀：stage_id 去掉可能的 #f# 修饰后即可作为关名尝试
+    return re.sub(r"#.*$", "", stage_id)
 
 
 def dataset_record_to_job_entry(rec: dict[str, Any]) -> dict[str, Any]:
@@ -72,7 +92,9 @@ def dataset_record_to_job_entry(rec: dict[str, Any]) -> dict[str, Any]:
     对无模组低星干员直接判 OperatorMissing；原始 req 留在 source 溯源）。
     """
     stage_id = rec["stage_id"]
-    code = stage_id_to_code(stage_id)
+    # 优先用数据集自带的权威 code（stages.jsonl 给出，覆盖全部关卡类型）；
+    # 缺失时按 stage_id 兜底推断。见 stage_id_to_code 的历史说明。
+    code = str(rec.get("stage_code") or "") or stage_id_to_code(stage_id)
     opers = []
     for op in rec.get("lineup", []):
         opers.append(
@@ -159,9 +181,8 @@ class ReplayController:
         maa_user = self._work / "debug" / "maa_user"
         maa_user.mkdir(parents=True, exist_ok=True)
         self._driver = MaaDriver(load_instance_config(instance_cfg_path), maa_user)
-        # 导航改用 MAA 原生任务（见 docs/adr/0002）：自建几何导航器已被实测证否。
-        # nav_cfg_path 仅保留签名兼容，几何标定表不再使用。
-        self._nav = MaaNativeNavigator(self._driver)
+        # 不再需要独立导航器：Copilot 自带导航（见 nav_maa 模块 docstring）。
+        # nav_cfg_path 仅保留签名兼容，几何标定表已废弃。
         self._writer = EpisodeWriter(self._work)
 
     def _write_maa_job(self, entry: dict[str, Any]) -> Path:
@@ -204,25 +225,11 @@ class ReplayController:
                 )
             )
 
-        try:
-            nav = self._nav.goto_stage_briefing(stage_code)
-        except NavigationError as exc:
-            print(f"[job {job_id}] 导航失败: {exc}", flush=True)
-            summary.update(ok=False, error=f"nav: {exc}")
-            return summary
-        if not nav.ok:
-            print(
-                f"[job {job_id}] 导航未到位（{nav.elapsed_s}s，"
-                f"任务序列={nav.tasks_seen}）",
-                flush=True,
-            )
-            summary.update(ok=False, error="nav: 未到准备界面")
-            return summary
-        print(
-            f"[job {job_id}] ✓ 已到准备界面（{nav.elapsed_s}s，"
-            f"标志={nav.ready_task}，抢停={nav.stopped}）",
-            flush=True,
-        )
+        # 不再预导航：Copilot 自带导航（MultiCopilotTaskPlugin::navigate_to_stage
+        # 先试模板匹配、无模板则图像 OCR），且显式执行 NotUsePrts 关闭代理作战。
+        # 原先用 Fight 预导航到 briefing 再抢停的两段式已废弃——Fight 会走
+        # UsePrts 分支（实测 Fight@PRTS1 出现 13 次），自抽号的代理记录是号商
+        # 机械刷出的异常数值，对训练无价值甚至有害。详见 nav_maa 模块 docstring。
 
         run_dir = self._writer.begin(stage_id, job_id)
         job_file = self._write_maa_job(entry)
@@ -237,7 +244,6 @@ class ReplayController:
 
         logger = StateLogger(self._driver, run_dir, on_shot=on_shot)
         logger.start()
-        logger.snap("briefing")
 
         tid = self._driver.append_copilot(job_file, formation=True)
         if tid <= 0:
@@ -257,6 +263,7 @@ class ReplayController:
         cursor = mark
         terminal: str | None = None
         seen_actions = 0
+        prts_seen: list[str] = []
         deadline = time.monotonic() + _CHAIN_TIMEOUT_S
         while self._driver.running() and terminal is None:
             fresh, cursor = self._driver.events_since(cursor)
@@ -274,6 +281,16 @@ class ReplayController:
                         rec_state(evt.details.get("details") or {})
                 elif evt.msg in ("TaskChainCompleted", "TaskChainError"):
                     terminal = evt.msg
+                # 代理护栏：Copilot 路径执行 NotUsePrts，正常永不出现；
+                # 一旦出现说明本局可能被游戏内代理污染（自抽号代理为异常数值，
+                # 无训练价值），如实记录以便事后剔除，不静默放过。
+                d = evt.details if isinstance(evt.details, dict) else {}
+                det = d.get("details") if isinstance(d.get("details"), dict) else {}
+                task = str(d.get("task") or det.get("task") or d.get("cur_task") or "")
+                if task:
+                    tail = task.rsplit("@", 1)[-1]
+                    if tail in PRTS_TASKS and tail not in prts_seen:
+                        prts_seen.append(tail)
             if time.monotonic() > deadline:
                 print(f"[job {job_id}] 链超时，stop", flush=True)
                 self._driver.stop()
@@ -284,6 +301,12 @@ class ReplayController:
         print(
             f"[job {job_id}] 任务链收尾={terminal} 动作事件={seen_actions}", flush=True
         )
+        if prts_seen:
+            print(
+                f"[job {job_id}] ⚠ 检测到代理作战痕迹 {prts_seen}"
+                "——本局数据来源不纯，episode 已标记 prts_detected",
+                flush=True,
+            )
 
         # 作战自然结束 + 结算推进：链收尾≠作战结束。
         # 交给 MAA 的 StartUp 回主界面——它会自己识别并处理结算/公告等弹窗，
@@ -292,7 +315,7 @@ class ReplayController:
         result_files: list[str] = []
         rel = logger.snap("settle")
         result_files.append(rel)
-        settled = self._nav.wait_battle_settle(timeout_s=_SETTLE_TIMEOUT_S)
+        settled = wait_settle(self._driver, timeout_s=_SETTLE_TIMEOUT_S)
         logger.stop()
         fresh, cursor = self._driver.events_since(cursor)
         for evt in fresh:
@@ -322,6 +345,10 @@ class ReplayController:
             # 战场状态（需 patched MaaCore）：无记录时为 None 且不落文件
             "battle_states_file": states_path.name if states_path else None,
             "battle_states": state_summary,
+            # 数据来源纯净度：正常应为空列表。非空表示本局出现了游戏内代理作战
+            # 痕迹（自抽号代理是号商机械刷出的异常数值，无训练价值）——
+            # 下游按此字段剔除即可，不必重跑或人工翻日志。
+            "prts_detected": prts_seen,
             "shot_files": None,
             "duration_ms": int((time.time() - t0) * 1000),
             "copilot_actions": seen_actions,
@@ -333,6 +360,7 @@ class ReplayController:
             episode=str(ep_path),
             copilot_actions=seen_actions,
             battle_states=state_summary["n"],
+            prts_detected=prts_seen,
             settled=settled,
         )
         print(

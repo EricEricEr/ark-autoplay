@@ -1,22 +1,34 @@
 """作业转换器纯逻辑单测：数据集记录 → 内嵌作业条目。"""
 
-import pytest
-
 from bridge.replay_controller import dataset_record_to_job_entry, stage_id_to_code
 
 
 def test_stage_id_to_code_main_series() -> None:
-    """主线 stage_id 正确映射到短码。"""
+    """主线 stage_id 正确映射到短码（去前导零）。"""
     assert stage_id_to_code("main_00-01") == "0-1"
     assert stage_id_to_code("main_01-12") == "1-12"
     assert stage_id_to_code("main_08-10") == "8-10"
 
 
-def test_stage_id_to_code_rejects_non_main() -> None:
-    """非主线 main_XX-YY 一律拒绝（v1 范围）。"""
-    for bad in ("tough_10-11", "main_00-TR01", "act23side_06", "main_1-1", ""):
-        with pytest.raises(ValueError):
-            stage_id_to_code(bad)
+def test_stage_id_to_code_accepts_non_main_and_strips_modifier() -> None:
+    """非 main_ 前缀的关卡不再被拒——活动关占数据集 71%，拒掉它们曾使队列只剩 6 条。
+
+    历史：本函数原只接受 ``main_XX-YY`` 且对其它一律抛 ``ValueError``，
+    是"队列只有 6 条"的代码级根因（2026-10-09 查明并修复，见 ADR-0006 附注）。
+    """
+    # 活动/分支/剿灭等：原样返回，交给 MAA 的 Fight 去导航
+    assert stage_id_to_code("act23side_06") == "act23side_06"
+    assert stage_id_to_code("sub_03-1-1") == "sub_03-1-1"
+    assert stage_id_to_code("camp_01") == "camp_01"
+    assert stage_id_to_code("wk_melee_1") == "wk_melee_1"
+    # #f# 修饰（复刻关）应剥掉，否则不是有效关名
+    assert stage_id_to_code("main_00-01#f#") == "0-1"
+    assert stage_id_to_code("act16mini_08#f#") == "act16mini_08"
+
+
+def test_stage_id_to_code_single_digit_main() -> None:
+    """一位数章节也要支持（原正则要求两位，'main_1-1' 会被误拒）。"""
+    assert stage_id_to_code("main_1-1") == "1-1"
 
 
 def _dataset_record() -> dict:
@@ -76,6 +88,23 @@ def test_converter_shapes() -> None:
     assert "kills" not in deploy and "costs" not in deploy  # 0 值条件不下发
 
 
+def test_converter_prefers_dataset_stage_code() -> None:
+    """数据集自带 stage_code 时优先采用（权威，覆盖全部关卡类型）。
+
+    活动关的 stage_id 与游戏关名常不一致，靠 stage_id 猜会错；stages.jsonl 的
+    code 字段是权威来源。
+    """
+    rec = _dataset_record()
+    rec["stage_code"] = "0-2"  # 与推断结果一致时无差别
+    assert dataset_record_to_job_entry(rec)["maa_job"]["stage_name"] == "0-2"
+
+    rec2 = _dataset_record()
+    rec2["stage_id"] = "act33side_07"
+    rec2["stage_code"] = "IW-7"  # 权威关名与 stage_id 完全不同
+    job = dataset_record_to_job_entry(rec2)["maa_job"]
+    assert job["stage_name"] == "IW-7", "必须用数据集的 code，而非从 stage_id 猜"
+
+
 def test_converter_defaults_skill_fields() -> None:
     """缺失 skill/skill_usage 时填默认 1/0。"""
     rec = _dataset_record()
@@ -84,3 +113,4 @@ def test_converter_defaults_skill_fields() -> None:
     job = dataset_record_to_job_entry(rec)["maa_job"]
     assert job["opers"][0]["skill"] == 1
     assert job["opers"][0]["skill_usage"] == 0
+

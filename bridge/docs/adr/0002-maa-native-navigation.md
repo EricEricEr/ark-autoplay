@@ -1,8 +1,16 @@
-# ADR-0006：用 MAA 原生任务做导航，废弃自建几何导航器
+# ADR-0002：用 MAA 原生任务做导航，废弃自建几何导航器
 
-- 状态：已接受（2026-10-09）
-- 范围：`bridge/src/bridge/navigator.py`（将被替代）、`bridge/src/bridge/maa_driver.py`（新增通用 `append_task`）
-- 关联：ADR-0001（纯 Python 驱动）、`docs/adr/0001` 的"备选方案 B"
+- 状态：**部分被取代**（2026-10-09）——"导航交给 MAA"的方向**正确**且已采纳；
+  但本文选定的载体 `Fight` **已被证否**（它会走游戏内代理作战），现改用 `Copilot`。
+  见 **ADR-0003**。
+- 范围：`bridge/src/bridge/navigator.py`（已废弃）、`nav_maa.py`（已重构为 CopilotRunner）
+- 关联：ADR-0001（纯 Python 驱动）、**ADR-0003（Copilot-only，取代本文的 Fight 方案）**
+
+> ⚠️ **阅读提示**：以下内容保留作为决策过程记录。其中关于 `Fight` 的实测数据
+> （24.7s 到位、每步 score 达 0.999~1.000 等）**仍然成立**，但结论
+> "用 Fight 做导航"**已作废**——后续发现 `Fight` 的 `UsePrts` 分支会触发
+> 游戏内代理作战（实测 `Fight@PRTS1` 出现 13 次），而自抽号的代理记录是号商
+> 机械刷出的异常数值、对训练无价值。最终方案见 ADR-0003。
 
 ## 背景
 

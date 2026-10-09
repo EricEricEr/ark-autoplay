@@ -70,6 +70,23 @@ class EpisodeWriter:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         return path
 
+    def write_battle_states(
+        self, run_dir: str | Path, records: list[dict[str, Any]]
+    ) -> Path | None:
+        """写 ``battle_states.jsonl``（每行一条战场状态，与动作同时间轴）。
+
+        由 MaaCore 的 ``BattleState`` 回调转成（见 ``battle_state`` 模块）。
+        **无记录时返回 None 且不创建文件**——让"这局没采到状态"与"采到空序列"
+        在文件系统层面就可区分（前者查不到文件，后者是空文件）。
+        """
+        if not records:
+            return None
+        path = Path(run_dir) / "battle_states.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return path
+
     def build_shot_manifest(self, run_dir: str | Path) -> dict[str, str]:
         """遍历 shots/ 生成 ``{相对路径: sha256短戳}`` 清单。"""
         shots_dir = Path(run_dir) / "shots"

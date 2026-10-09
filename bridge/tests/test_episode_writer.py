@@ -70,3 +70,32 @@ def test_validate_empty_shots_rejected(tmp_path: Path) -> None:
     run_dir = writer.begin("main_00-01", 1)
     with pytest.raises(ValueError):
         writer.write_episode(run_dir, _fake_episode())
+
+
+def test_write_battle_states_roundtrip(tmp_path: Path) -> None:
+    """战场状态 jsonl 写出可回读（每行一条，含 t_ms 与费用）。"""
+    writer = EpisodeWriter(tmp_path)
+    run_dir = writer.begin("main_00-01", 1)
+    (run_dir / "shots" / "001_tick.png").write_bytes(b"\x89PNG-a")
+
+    recs = [
+        {"protocol_version": "0.1.0-battlestate-draft", "t_ms": 0, "costs": 10},
+        {"protocol_version": "0.1.0-battlestate-draft", "t_ms": 1500, "costs": 14},
+    ]
+    path = writer.write_battle_states(run_dir, recs)
+    assert path is not None and path.name == "battle_states.jsonl"
+    lines = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
+    assert [x["costs"] for x in lines] == [10, 14]
+
+
+def test_write_battle_states_empty_creates_no_file(tmp_path: Path) -> None:
+    """空记录**不创建文件**——让"没采到状态"与"采到空序列"在文件层面可区分。
+
+    这条很重要：用官方 MaaCore（无 BattleState 回调）时应表现为"文件不存在"，
+    而不是"存在但为空的文件"——后者会被误读成"这局状态全丢"。
+    """
+    writer = EpisodeWriter(tmp_path)
+    run_dir = writer.begin("main_00-01", 1)
+    assert writer.write_battle_states(run_dir, []) is None
+    assert not (run_dir / "battle_states.jsonl").exists()
+

@@ -1,19 +1,31 @@
-"""作业重放调度模块（数据工厂主循环，v1WIP）。
+"""作业重放调度模块（数据工厂主循环）。
 
 职责（设计文档 §5.4 / §10）：按 jobs 文件逐个重放 prts.plus 作业：
 构建 MAA 作业 JSON（保留来源元数据）→ 固定点位导航到关卡 briefing
-→ 下发 Copilot 接管作战 → 全程采集（回调事件流 + 1.5s 节拍截图 +
+→ 下发 Copilot 接管作战 → 全程采集（回调事件流 + 战场状态 + 1.5s 节拍截图 +
 CopilotAction 即时补拍 + 结算抓帧）→ 写 episode 束（bundle 结构沿用
 ``data-validation/capture_episode.py`` 已验证格式）。
 
 输入为 ``configs/jobs_main_v1.json``（内嵌转换好的 MAA 形态作业 +
 来源署名，控制器离线可用）；输出交给 ``episode_writer`` 落盘。
 
-已知边界（v1WIP，如实记录不求完美）：
+战场状态采集（2026-10-09 新增）
+-------------------------------
+使用**打过补丁的 MaaCore**（``patches/0001-battle-state-callback.patch``）时，
+每个作业动作执行前会收到 ``what="BattleState"`` 回调，含费用/击杀/待部署栏/
+已部署干员；本模块将其转为 ``battle_states.jsonl`` 并写进 episode 清单
+（``battle_states_file`` / ``battle_states`` 摘要）。
+
+用**官方发行版**时不发此回调 → ``battle_states.jsonl`` 不生成、
+``battle_states_file`` 为 None、``battle_states.n = 0``。
+**两种运行方式产出的 bundle 结构兼容**，可混存；靠 ``battle_states_file``
+是否为 None 区分这批数据有没有状态。
+
+已知边界（如实记录不求完美）：
 
 - Copilot 任务链在作业动作执行完即收尾，作战自然结束靠
   ``navigator.wait_battle_settle`` 轮询蓝钮推进（期间桌面上会闪过
-  结算画面并被抓帧）；胜负/OCR 判定属 TODO(M0.x)；
+  结算画面并被抓帧）；胜负判定属 TODO(M0.x)；
 - 断点续跑仅按"episode 目录已存在即跳过"（``--skip-done``）；
 - 中途失败（导航/下发失败）记摘要后继续下一局。
 """
@@ -28,6 +40,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from bridge.battle_state import battle_state_to_record, summarize_states
 from bridge.episode_writer import EpisodeWriter
 from bridge.maa_driver import MaaDriver, load_instance_config
 from bridge.navigator import NavigationError, Navigator
@@ -167,10 +180,26 @@ class ReplayController:
         t0 = time.time()
         t0_wall = int(t0 * 1000)
         records: list[dict[str, Any]] = []
+        states: list[dict[str, Any]] = []
 
         def rec(msg: str, **kw: Any) -> None:
             records.append(
                 {"t_ms": int(time.time() * 1000) - t0_wall, "msg": msg, **kw}
+            )
+
+        def rec_state(details: dict[str, Any]) -> None:
+            """把 MaaCore 的 BattleState 回调转成协议的战场状态记录。
+
+            需 patched MaaCore（``patches/0001-battle-state-callback.patch``）；
+            官方发行版不会发此回调，届时本函数永不触发、``states`` 保持为空。
+            """
+            states.append(
+                battle_state_to_record(
+                    details,
+                    int(time.time() * 1000) - t0_wall,
+                    job_id=job_id,
+                    stage_code=stage_code,
+                )
             )
 
         try:
@@ -220,12 +249,14 @@ class ReplayController:
                 rec(evt.msg, details=evt.details)
                 if evt.msg == "TaskChainStart":
                     logger.set_active(True)
-                elif (
-                    evt.msg == "SubTaskExtraInfo"
-                    and evt.details.get("what") == "CopilotAction"
-                ):
-                    seen_actions += 1
-                    logger.snap("action")
+                elif evt.msg == "SubTaskExtraInfo":
+                    what = evt.details.get("what")
+                    if what == "CopilotAction":
+                        seen_actions += 1
+                        logger.snap("action")
+                    elif what == "BattleState":
+                        # patched MaaCore 才有；官方发行版不会走到这里
+                        rec_state(evt.details.get("details") or {})
                 elif evt.msg in ("TaskChainCompleted", "TaskChainError"):
                     terminal = evt.msg
             if time.monotonic() > deadline:
@@ -263,6 +294,8 @@ class ReplayController:
         )
 
         self._writer.write_events(run_dir, records)
+        states_path = self._writer.write_battle_states(run_dir, states)
+        state_summary = summarize_states(states)
         result_first = result_files[0] if result_files else ""
         result_last = result_files[-1] if result_files else ""
         episode = {
@@ -277,6 +310,9 @@ class ReplayController:
             "job_file": str(job_file),
             "result_screen_files": [result_first, result_last],
             "action_events_file": "action_events.jsonl",
+            # 战场状态（需 patched MaaCore）：无记录时为 None 且不落文件
+            "battle_states_file": states_path.name if states_path else None,
+            "battle_states": state_summary,
             "shot_files": None,
             "duration_ms": int((time.time() - t0) * 1000),
             "copilot_actions": seen_actions,
@@ -287,9 +323,14 @@ class ReplayController:
             ok=terminal == "TaskChainCompleted",
             episode=str(ep_path),
             copilot_actions=seen_actions,
+            battle_states=state_summary["n"],
             settled=settled,
         )
-        print(f"[job {job_id}] episode -> {ep_path}", flush=True)
+        print(
+            f"[job {job_id}] episode -> {ep_path}  "
+            f"战场状态 {state_summary['n']} 条{state_summary}",
+            flush=True,
+        )
         return summary
 
     def run(

@@ -12,9 +12,18 @@ Copilot 任务下发与任务链等待、ADB 截图与点触。
   ``configs/instances/*.yaml``，代码内不出现任何本机路径常量；
 - ``asst`` 的导入在首次使用时惰性完成，纯逻辑单测不需要安装 MAA。
 
-回调事实（v0 实测，见 ``docs/adr/0001``）：回调包含连接/截图协商、任务链
-生命周期与作战动作事件（``SubTaskExtraInfo`` 的 ``CopilotAction``），
-但**不含**费用/击杀等战场状态，状态采集需自行截图（见 ``state_logger``）。
+回调事实（**2026-10-09 更新**）：
+
+- **官方发行版**：回调包含连接/截图协商、任务链生命周期与作战动作事件
+  （``SubTaskExtraInfo`` 的 ``CopilotAction``），但**不含**费用/击杀等战场状态
+  （导出的 C API 无 ``GetCost``/``GetKills``）。
+- **打过补丁的 MaaCore**（``patches/0001-battle-state-callback.patch``）：额外发出
+  ``SubTaskExtraInfo`` + ``what="BattleState"``，含费用/击杀/待部署栏/已部署干员。
+  状态转换见 ``battle_state`` 模块。
+
+两者的 ``Asst*`` 接口与 bundle 结构完全兼容，故本驱动无需区分——把实例配置的
+``maa_dir`` 指向哪个运行时，就拿到对应能力。
+
 任务链在作业动作全部执行完毕时即完成，**不等作战自然结束**，胜负判定需
 在任务链结束后由结算画面模板判定（见 ``navigator.detect_result``）。
 """

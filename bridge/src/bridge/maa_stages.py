@@ -1,26 +1,57 @@
 """MAA 关卡可导航性判定（依据 MaaCore 源码，非猜测）。
 
-为什么需要它
-------------
-`Fight` 任务**不是任意关名都接受**。实测（2026-10-09）下发 `GT-1` 被直接拒收：
+**两条路径的判据完全不同，勿混用（重要纠错）**
+================================================
 
-    Unknown task: GT-1
-    The stage name is not in invalid, or is not main line stage GT-1
-    Cannot set stage GT-1
+2026-10-09 曾用 ``Fight`` 的规则判"可导航"，**导致大批活动关被误判为不可用**
+（用户指出"这些作业都是从 MAA 作业网站下载的"，质疑成立）。原因是把两条
+独立路径的判据搞混了：
 
-根因在 `StageNavigationTask::set_stage_name`（源码见 ``maacore/_src``）：
+``Fight``（我们用它做 nav_only 导航）
+-------------------------------------
+``StageNavigationTask::set_stage_name``：
 
-1. 若 task 表里有同名 task → 直接可用（``m_is_directly``）；
-2. 否则须匹配正则 ``^([A-Za-z]{0,3})(\\d{1,2})-(\\d{1,2})(?:-?(\\w+))*$``，
-   **且**必须存在名为 ``Episode{章节}`` 的 task。
+1. task 表里有同名 task → 直接可用；
+2. 否则须匹配 ``^([A-Za-z]{0,3})(\\d{1,2})-(\\d{1,2})(?:-?(\\w+))*$``
+   **且**存在 ``Episode{章节}`` task。
+   → 这是**章节寻路**的要求，``GT-1`` 因不匹配该正则而被拒。
 
-即：`GT-1` 里 `GT` 是前缀、其后没有 ``数字-数字``，故不匹配 → 拒收。
-这解释了为什么活动关（占数据集 71%）绝大多数无法用 `Fight` 直接导航。
+``Copilot``（执行作业，自带的 navigate_to_stage）
+--------------------------------------------------
+``MultiCopilotTaskPlugin::navigate_to_stage``：**无章节要求、无关卡白名单**，
+纯靠 OCR 在地图上滑动找关名（``find_stage`` → 右滑 10 次 → 左滑反复扫）。
 
-本模块把该规则固化为可复用判定，供队列生成与运行时预检使用。
+而 ``CopilotTask.cpp`` 的 multi 分支用
 
-⚠️ 判定的是"**MAA 会不会接受这个关名**"，**不代表账号已解锁该关**——
-后者取决于玩家进度，只能在运行时由导航结果体现。
+    const auto& map_data = Tile.find(stage_name);
+    if (!map_data || !json::open(map_data->second)) return false;
+
+即 **MAA 靠"有无地图数据（Arknights-Tile-Pos）"判断能否处理该关**。
+实测该库覆盖：
+
+| 类型 | 覆盖 |
+|---|---|
+| MAIN | 564/564 = 100% |
+| SUB | 86/86 = 100% |
+| CAMPAIGN / DAILY / GUIDE | 100% |
+| **ACTIVITY** | **2152/2317 = 92.9%** |
+| CLIMB_TOWER | 137/239 = 57.3% |
+| 合计（作业维度） | **40295/40299 = 100.0%** |
+
+结论：**绝大多数作业都有地图数据**。先前 8,440/39,010 的估计是错的。
+
+本模块据此提供正确判据
+----------------------
+- :func:`load_tile_keys` —— 解析 Tile-Pos 的关卡 key 集合（权威判据）；
+- :func:`has_map_data` —— Copilot 能否处理该关（**推荐用它做队列过滤**）；
+- :func:`fight_accepts` —— ``Fight`` 能否接受该关名（导航用，保守判据）。
+
+⚠️ 两条提醒：
+1. "有地图数据 / Fight 接受"**不代表账号已解锁该关**——后者只能在运行时
+   由导航结果体现；
+2. ``Fight`` 的章节约束仍然真实存在：即使关卡有地图数据，
+   用 ``Fight(nav_only)`` 导航时若关卡名推不出 ``Episode{N}``，
+   **导航会失败**（但可改用 Copilot 自带导航 + 手工进入章节地图）。
 """
 
 from __future__ import annotations
@@ -29,16 +60,23 @@ import json
 import re
 from pathlib import Path
 
-# 与 MaaCore `StageNavigationTask::set_stage_name` 中的 boost::regex 严格一致
+# ---- Fight 路径（StageNavigationTask::set_stage_name）----
 STAGE_RE = re.compile(r"^([A-Za-z]{0,3})(\d{1,2})-(\d{1,2})(?:-?(\w+))*$")
+
+# Tile-Pos 文件名里的分类段（用于从 `{key}-{category}-{parent}-level_{name}` 提取 key）
+_TILE_CATS = (
+    "activities",
+    "obt",
+    "weekly",
+    "campaign",
+    "guide",
+    "tutorial",
+    "sandbox",
+)
 
 
 def load_maa_tasks(maa_dir: str | Path) -> set[str]:
-    """合并 MAA 运行时下**所有** ``tasks.json`` 的 task 名。
-
-    MAA 可能有主资源与增量资源多份 tasks.json（``resource/`` 与 ``cache/``），
-    ``Task.get`` 在同一张表里查，故此处取并集。
-    """
+    """合并 MAA 运行时下**所有** ``tasks.json`` 的 task 名。"""
     names: set[str] = set()
     for p in Path(maa_dir).rglob("tasks.json"):
         try:
@@ -50,42 +88,61 @@ def load_maa_tasks(maa_dir: str | Path) -> set[str]:
     return names
 
 
-def navigable_stages(tasks: set[str]) -> set[str]:
-    """可导航的章节号集合（即存在 ``Episode{N}`` 的 N）。"""
-    out: set[str] = set()
-    for t in tasks:
-        m = re.fullmatch(r"Episode(\d+)", t)
-        if m:
-            out.add(m.group(1))
-    return out
+def _tile_key_of(stem: str) -> str:
+    """从 Tile-Pos 文件名提取关卡 key。
+
+    文件名结构 ``{key}-{category}-{parent}-level_{levelname}``；
+    key 自身可能含连字符（如 ``main_00-01``），故按 category 标记切分。
+    """
+    for cat in _TILE_CATS:
+        marker = f"-{cat}-"
+        i = stem.find(marker)
+        if i > 0:
+            return stem[:i]
+    j = stem.rfind("-level_")
+    return stem[:j] if j > 0 else stem
 
 
-def maa_navigable(stage: str, tasks: set[str]) -> bool:
-    """该关名能否被 ``Fight`` 接受（规则见模块 docstring）。
+def load_tile_keys(maa_dir: str | Path) -> set[str]:
+    """加载 Arknights-Tile-Pos 的关卡 key 集合（**Copilot 可处理性的权威判据**）。"""
+    root = Path(maa_dir) / "resource" / "Arknights-Tile-Pos"
+    keys: set[str] = set()
+    if not root.is_dir():
+        return keys
+    for f in root.glob("*.json"):
+        keys.add(_tile_key_of(f.stem))
+    return keys
 
-    ``tasks`` 为空时视为"未加载规则表"，一律返回 True（不做限制），
-    便于在没装 MAA 的环境里跑纯逻辑测试。
+
+def has_map_data(stage_id: str, code: str, tile_keys: set[str]) -> bool:
+    """MAA 是否有该关的地图数据（= Copilot 能否处理）。
+
+    ``tile_keys`` 为空时视为"未加载"，返回 True（不限制），便于纯逻辑测试。
+    """
+    if not tile_keys:
+        return True
+    sid = re.sub(r"#.*$", "", stage_id)
+    if stage_id in tile_keys or sid in tile_keys:
+        return True
+    return bool(code) and code in tile_keys
+
+
+def fight_accepts(stage_code: str, tasks: set[str]) -> bool:
+    """``Fight`` 能否接受该关名（导航路径的**保守**判据）。
+
+    规则见 ``StageNavigationTask::set_stage_name``。注意这比
+    :func:`has_map_data` 严格得多——它额外要求 ``Episode{章节}`` 存在。
     """
     if not tasks:
         return True
-    if stage in tasks:
+    if stage_code in tasks:
         return True
-    m = STAGE_RE.match(stage)
+    m = STAGE_RE.match(stage_code)
     if not m:
         return False
     return f"Episode{m.group(2)}" in tasks
 
 
-def explain(stage: str, tasks: set[str]) -> str:
-    """给出判定原因（用于日志/报告，便于排障）。"""
-    if not tasks:
-        return "no-task-table"
-    if stage in tasks:
-        return "direct-task"
-    m = STAGE_RE.match(stage)
-    if not m:
-        return "shape-mismatch(需 前缀?+数字-数字，如 1-7 / JT8-2 / H10-1-Hard)"
-    ep = f"Episode{m.group(2)}"
-    if ep not in tasks:
-        return f"missing-{ep}"
-    return "ok"
+def navigable_stage_types() -> tuple[str, ...]:
+    """Tile-Pos 覆盖率较高的关卡类型（供文档/报告引用，非硬编码过滤）。"""
+    return ("MAIN", "SUB", "ACTIVITY", "CAMPAIGN", "DAILY", "GUIDE")

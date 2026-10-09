@@ -217,6 +217,20 @@ class MaaDriver:
             time.sleep(1.0)  # 等待截图通道协商（ConnectionInfo）
         return ok
 
+    def append_task(self, task_type: str, params: dict[str, Any] | None = None) -> int:
+        """下发**任意** MAA 任务，返回 task id（0 表示参数被拒）。
+
+        通用入口。用它可复用 MAA 自己实现的界面识别与导航，而不必自写：
+        例如 ``append_task("StartUp", {"client_type": "Official"})`` 会让 MAA
+        **自己识别当前界面并逐步导航到主界面**（社区多年打磨的逻辑）。
+
+        注意实测坑（``docs/adr/0001``）：v6 的 ``StartUp`` 必须传
+        ``client_type``，否则本方法返回 0。
+        """
+        if self._asst is None:
+            raise RuntimeError("尚未 connect")
+        return int(self._asst.append_task(task_type, params or {}))
+
     def append_copilot(self, job_path: str | Path, formation: bool = True) -> int:
         """下发 Copilot 自动战斗任务，返回 task id（0 表示参数被拒）。"""
         if self._asst is None:

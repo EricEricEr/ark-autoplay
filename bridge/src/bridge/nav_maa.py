@@ -159,6 +159,47 @@ def safe_copilot_params(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     return p
 
 
+def navigate_only(driver: MaaDriver, stage_code: str, timeout_s: float = 180.0) -> bool:
+    """把游戏从主页导航到 ``stage_code`` 的准备界面，**不开打、不碰代理**。
+
+    依赖 **patch 0002**（``patches/0002-fight-nav-only.patch``）：给 ``Fight``
+    任务增加 ``nav_only`` 参数，只保留启动与关卡导航子任务、禁用作战
+    （``m_fight_task_ptr``），从而绕开 ``UsePrts``（游戏内代理作战）。
+
+    ⚠️ 未打该补丁的 MaaCore 会忽略 ``nav_only`` 并**照常开打**，故使用前
+    应确认运行时已应用 patch 0002（见 ``maacore/UPSTREAM.json``）。
+
+    为什么不用 Copilot 自带的导航：``MultiCopilotTaskPlugin::navigate_to_stage``
+    **只做地图内滑动找关卡**，没有"主页→章节地图"的章节寻路（``Episode{N}``），
+    在主页会卡死（实测其 OCR 反复读到主界面文本）。
+
+    为什么不用普通 ``Fight``：``FightBegin`` 的 next 里 ``UsePrts`` 排在
+    ``StartButton1`` **之前**，只要该关有代理记录就必然先点代理；而自抽号的
+    代理记录是号商机械刷出的异常数值，对训练无价值。
+
+    返回是否在超时内导航完成（``TaskChainCompleted``）。
+    """
+    tid = driver.append_task("Fight", {"stage": stage_code, "nav_only": True})
+    if not tid:
+        raise NavigationError(
+            f"append_task(Fight, nav_only=True) 返回 0: {stage_code}"
+            "（关卡名不被 MAA 接受，或 MaaCore 未打 patch 0002）"
+        )
+    mark = driver.mark()
+    if not driver.start():
+        return False
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        evts, mark = driver.events_since(mark)
+        for evt in evts:
+            if evt.msg in ("TaskChainCompleted", "AllTasksCompleted"):
+                return True
+            if evt.msg == "TaskChainError":
+                return False
+        time.sleep(0.2)
+    return False
+
+
 def wait_settle(driver: MaaDriver, timeout_s: float = 300.0) -> bool:
     """作战收尾：把游戏带回可操作状态（用 MAA 的 ``StartUp``）。
 

@@ -43,7 +43,7 @@ from typing import Any
 from bridge.battle_state import battle_state_to_record, summarize_states
 from bridge.episode_writer import EpisodeWriter
 from bridge.maa_driver import MaaDriver, load_instance_config
-from bridge.nav_maa import PRTS_TASKS, wait_settle
+from bridge.nav_maa import PRTS_TASKS, NavigationError, navigate_only, wait_settle
 from bridge.state_logger import StateLogger
 
 # 数据集动作类型 → MAA 作业动作白名单（其余如 Output/MoveCamera 丢弃）
@@ -225,11 +225,30 @@ class ReplayController:
                 )
             )
 
-        # 不再预导航：Copilot 自带导航（MultiCopilotTaskPlugin::navigate_to_stage
-        # 先试模板匹配、无模板则图像 OCR），且显式执行 NotUsePrts 关闭代理作战。
-        # 原先用 Fight 预导航到 briefing 再抢停的两段式已废弃——Fight 会走
-        # UsePrts 分支（实测 Fight@PRTS1 出现 13 次），自抽号的代理记录是号商
-        # 机械刷出的异常数值，对训练无价值甚至有害。详见 nav_maa 模块 docstring。
+        # 两段式（对应 ADR-0002 的正确版）：
+        #   1) 用 Fight(nav_only=True) 把游戏从主页导航到关卡准备界面
+        #      —— 依赖 patch 0002，只导航不开打、不碰游戏内代理作战；
+        #   2) 交给 Copilot 忠实回放 prts.plus 玩家作业。
+        # 为何必须分两段：Copilot 的 navigate_to_stage 只做「地图内滑动找关卡」，
+        # 缺「主页→章节地图」的章节寻路（Episode{N}），在主页会卡死；
+        # 而普通 Fight 会走 UsePrts（实测 Fight@PRTS1 出现 13 次），
+        # 自抽号的代理记录是号商机械刷出的异常数值，对训练无价值。
+        # 详见 bridge/docs/adr/0003~0005 与 nav_maa 模块 docstring。
+        nav_ok = False
+        try:
+            nav_ok = navigate_only(self._driver, stage_code)
+        except NavigationError as exc:
+            print(f"[job {job_id}] 导航失败: {exc}", flush=True)
+            summary.update(ok=False, error=f"nav: {exc}")
+            return summary
+        if not nav_ok:
+            print(f"[job {job_id}] 导航未完成（{stage_code}）", flush=True)
+            summary.update(ok=False, error="nav: 未到准备界面")
+            return summary
+        print(
+            f"[job {job_id}] ✓ 已导航到 {stage_code} 准备界面（nav_only）",
+            flush=True,
+        )
 
         run_dir = self._writer.begin(stage_id, job_id)
         job_file = self._write_maa_job(entry)
@@ -244,6 +263,7 @@ class ReplayController:
 
         logger = StateLogger(self._driver, run_dir, on_shot=on_shot)
         logger.start()
+        logger.snap("briefing")
 
         tid = self._driver.append_copilot(job_file, formation=True)
         if tid <= 0:
@@ -265,8 +285,10 @@ class ReplayController:
         seen_actions = 0
         prts_seen: list[str] = []
         deadline = time.monotonic() + _CHAIN_TIMEOUT_S
-        while self._driver.running() and terminal is None:
-            fresh, cursor = self._driver.events_since(cursor)
+
+        def drain(fresh: list[Any]) -> None:
+            """处理一批事件（收尾时也要跑，见下方说明）。"""
+            nonlocal terminal, seen_actions
             for evt in fresh:
                 rec(evt.msg, details=evt.details)
                 if evt.msg == "TaskChainStart":
@@ -286,11 +308,15 @@ class ReplayController:
                 # 无训练价值），如实记录以便事后剔除，不静默放过。
                 d = evt.details if isinstance(evt.details, dict) else {}
                 det = d.get("details") if isinstance(d.get("details"), dict) else {}
-                task = str(d.get("task") or det.get("task") or d.get("cur_task") or "")
-                if task:
-                    tail = task.rsplit("@", 1)[-1]
+                t = str(d.get("task") or det.get("task") or d.get("cur_task") or "")
+                if t:
+                    tail = t.rsplit("@", 1)[-1]
                     if tail in PRTS_TASKS and tail not in prts_seen:
                         prts_seen.append(tail)
+
+        while self._driver.running() and terminal is None:
+            fresh, cursor = self._driver.events_since(cursor)
+            drain(fresh)
             if time.monotonic() > deadline:
                 print(f"[job {job_id}] 链超时，stop", flush=True)
                 self._driver.stop()
@@ -298,6 +324,14 @@ class ReplayController:
                 terminal = terminal or "Timeout"
                 break
             time.sleep(0.2)
+
+        # 关键：`running()` 变 False 是**先于**我们读到终态事件的——
+        # 任务链一结束驱动即停，而含 `TaskChainCompleted` 的那批事件尚未被取走。
+        # 若不在此补取，terminal 会永远停在 None、把成功误判为失败
+        # （实测：episode 里明明有 TaskChainCompleted，却报"任务链收尾=None"）。
+        fresh, cursor = self._driver.events_since(cursor)
+        drain(fresh)
+
         print(
             f"[job {job_id}] 任务链收尾={terminal} 动作事件={seen_actions}", flush=True
         )

@@ -1,0 +1,32 @@
+diff --git a/src/MaaCore/Task/Interface/FightTask.cpp b/src/MaaCore/Task/Interface/FightTask.cpp
+index 7dfbdf4..6501f17 100644
+--- a/src/MaaCore/Task/Interface/FightTask.cpp
++++ b/src/MaaCore/Task/Interface/FightTask.cpp
+@@ -88,6 +88,10 @@ bool asst::FightTask::set_params(const json::value& params)
+ 
+     const int stone = params.get("stone", 0);
+     const int times = params.get("times", INT_MAX);
++    // [ark-autoplay patch 0002] 只导航不开打：导航到关卡准备界面后
++    // 即成功收尾，不执行作战（也就不会触碰游戏内代理作战 UsePrts）。
++    // 默认 false，行为与原版完全等价。详见 docs/adr/0005。
++    const bool nav_only = params.get("nav_only", false);
+     const int series = params.get("series", 1);
+ 
+     m_fight_times_prt->set_fight_times(times);
+@@ -190,5 +194,16 @@ bool asst::FightTask::set_params(const json::value& params)
+     m_sidestory_reopen_task_ptr->set_enable_yituliu(enable_yituliu);
+     m_sidestory_reopen_task_ptr->set_server(server);
+ 
++    // [ark-autoplay patch 0002] nav_only：仅保留导航，禁用作战相关子任务。
++    // PackageTask::run 对 disabled 子任务是 continue 跳过，故整体仍
++    // 正常返回成功 —— 即"导航到准备界面后干净收尾"。
++    if (nav_only) {
++        Log.info(__FUNCTION__, "nav_only enabled: navigate only, no battle");
++        m_fight_task_ptr->set_enable(false);
++        m_sidestory_reopen_task_ptr->set_enable(false);
++        m_stage_drops_plugin_ptr->set_enable(false);
++        m_fight_times_prt->set_enable(false);
++    }
++
+     return true;
+ }

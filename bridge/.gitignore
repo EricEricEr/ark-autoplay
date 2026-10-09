@@ -224,3 +224,14 @@ __marimo__/
 data/large/
 logs/
 *.parquet
+
+# MaaCore 上游源码树：不入库（1.2GB+）。
+# 上游代码由 scripts/fetch_maacore.* 按 maacore/UPSTREAM.json 记录的 commit 重建，
+# 仓库只保存「上游 commit pin + patches/ 中的本地改动」，见 maacore/README.md。
+# 这样既满足 AGPL 的源码可得性（可从公开上游按 commit 取回），又避免把
+# 上游整棵树塞进本仓——注意：**禁止**把 maacore/ 当成"无需遵守 AGPL"的理由，
+# 一旦引用其源码本仓即为其衍生作品（NOTICE.md）。
+maacore/*
+!maacore/README.md
+!maacore/UPSTREAM.json
+!maacore/.gitkeep

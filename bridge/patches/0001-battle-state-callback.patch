@@ -1,0 +1,141 @@
+diff --git a/src/MaaCore/Task/BattleHelper.cpp b/src/MaaCore/Task/BattleHelper.cpp
+index 32ea597..f784b81 100644
+--- a/src/MaaCore/Task/BattleHelper.cpp
++++ b/src/MaaCore/Task/BattleHelper.cpp
+@@ -402,6 +402,55 @@ bool asst::BattleHelper::update_cost(const cv::Mat& image, const cv::Mat& image_
+     return true;
+ }
+ 
++/// [PATCH 0001] 战场状态导出。只读取既有成员并序列化，不触碰识别逻辑。
++json::object asst::BattleHelper::battle_state_json() const
++{
++    json::object state;
++    state["in_battle"] = m_in_battle;
++    state["in_speedup"] = m_in_speedup;
++    state["costs"] = m_cost;
++    state["kills"] = m_kills;
++    state["total_kills"] = m_total_kills;
++    state["camera_count"] = m_camera_count;
++
++    // 待部署栏（手牌）：名字 / 职业 / 费用 / 是否可部署 / 是否冷却中 / 头像位置
++    json::array hand;
++    for (const auto& oper : m_cur_deployment_opers) {
++        hand.emplace_back(json::object {
++            { "index", static_cast<int64_t>(oper.index) },
++            { "name", oper.name },
++            // 职业用可读字符串（enum_to_string）而非裸整数：下游无需同步枚举定义
++            { "role", enum_to_string(oper.role) },
++            { "role_id", static_cast<int64_t>(oper.role) },
++            { "cost", oper.cost },
++            { "available", oper.available },
++            { "cooling", oper.cooling },
++            { "rect", json::array { oper.rect.x, oper.rect.y, oper.rect.width, oper.rect.height } },
++            { "is_usual_location", oper.is_usual_location },
++        });
++    }
++    state["hand"] = std::move(hand);
++
++    // 已部署干员：职业 + 名字 -> 棋盘格坐标（MaaCore 的 Point 是格子坐标而非像素）
++    json::array deployed;
++    for (const auto& [tag, loc] : m_battlefield_opers) {
++        deployed.emplace_back(json::object {
++            { "name", tag.name },
++            { "role", enum_to_string(tag.role) },
++            { "role_id", static_cast<int64_t>(tag.role) },
++            { "row", loc.y },
++            { "col", loc.x },
++        });
++    }
++    state["deployed"] = std::move(deployed);
++
++    // 关卡与镜头信息：供下游把格子坐标映射回像素
++    state["stage_name"] = m_stage_name;
++    state["camera_shift"] = json::array { m_camera_shift.first, m_camera_shift.second };
++
++    return state;
++}
++
+ bool asst::BattleHelper::deploy_oper(const std::string& name, const Point& loc, DeployDirection direction)
+ {
+     return deploy_oper(battle::Role::Unknown, name, loc, direction);
+diff --git a/src/MaaCore/Task/BattleHelper.h b/src/MaaCore/Task/BattleHelper.h
+index 3393b5c..3e21509 100644
+--- a/src/MaaCore/Task/BattleHelper.h
++++ b/src/MaaCore/Task/BattleHelper.h
+@@ -57,6 +57,20 @@ protected:
+     bool update_kills(const cv::Mat& image, const cv::Mat& image_prev = cv::Mat());
+     bool update_cost(const cv::Mat& image, const cv::Mat& image_prev = cv::Mat());
+ 
++    /// [PATCH 0001] 战场状态导出：把已在维护的战场数值状态组装为 JSON。
++    ///
++    /// 用途：数据工厂（ark-autoplay-bridge）重放作业时采集 (状态, 动作) 轨迹，
++    /// 供决策模型做行为克隆。MaaCore 内部本就在维护这些量（m_cost / m_kills /
++    /// m_cur_deployment_opers / m_battlefield_opers），但它们此前**未通过 asst
++    /// 接口暴露**（导出的 C API 无 GetCost/GetKills，回调亦不含战场状态）。
++    ///
++    /// **本方法只读取已有成员并序列化，不修改任何识别逻辑**，故不影响上游行为。
++    ///
++    /// 注意：这里只**组装** JSON，不负责发送——发送需要 `AbstractTask::callback`，
++    /// 而本类不继承 AbstractTask（访问不到）。发送由同时继承两者的
++    /// `BattleProcessTask::notify_battle_state()` 完成。
++    json::object battle_state_json() const;
++
+     cv::Mat get_top_view(const cv::Mat& cam_img, bool side = true, bool has_multi_stages = false);
+ 
+     bool deploy_oper(const std::string& name, const Point& loc, battle::DeployDirection direction);
+diff --git a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp
+index 15451a0..71f97ab 100644
+--- a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp
++++ b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp
+@@ -246,6 +246,11 @@ bool asst::BattleProcessTask::do_action(const battle::copilot::Action& action, s
+     const auto& [/*可unknown*/ role, name] = get_name_from_group(action.role, action.name);
+     const auto& location = action.location;
+ 
++    // [PATCH 0001] 动作执行前导出战场状态——这是 (state, action) 的配对点，
++    // 也是行为克隆要学的样本。放在此处可确保读到的 m_cost / m_kills /
++    // m_cur_deployment_opers 已由 wait_condition() 与上面的 update_deployment() 刷新。
++    notify_battle_state();
++
+     switch (action.type) {
+     case ActionType::Deploy:
+         // Deploy 语义上必填 location，未填时按 [0, 0] 部署（与历史版本 json 缺失时的行为一致）
+@@ -448,6 +453,20 @@ void asst::BattleProcessTask::notify_action(const battle::copilot::Action& actio
+     callback(AsstMsg::SubTaskExtraInfo, info);
+ }
+ 
++/// [PATCH 0001] 发送战场状态（what = "BattleState"）。
++///
++/// 触发时机：每次 `do_action()` 的 `wait_condition()` 之后——即**每个作业动作
++/// 执行前的那个决策时刻**。这正是行为克隆需要的 (state, action) 配对点。
++///
++/// 附带说明：`wait_condition()` 内部会在等待条件满足时更新 m_cost / m_kills /
++/// m_cur_deployment_opers，故此处读到的是"该动作即将执行时的战场状态"。
++void asst::BattleProcessTask::notify_battle_state()
++{
++    json::value info = basic_info_with_what("BattleState");
++    info["details"] = battle_state_json();
++    callback(AsstMsg::SubTaskExtraInfo, info);
++}
++
+ bool asst::BattleProcessTask::wait_condition(const Action& action)
+ {
+     cv::Mat image, image_prev;
+diff --git a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.h b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.h
+index 933f9fb..0ed3cfc 100644
+--- a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.h
++++ b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.h
+@@ -43,6 +43,14 @@ protected:
+     // 将作业步骤中的name转换为具体干员名
+     battle::OperNameTag get_name_from_group(battle::Role role, const std::string& oper_name_in_action);
+     void notify_action(const battle::copilot::Action& action);
++
++    /// [PATCH 0001] 发送战场状态回调（what = "BattleState"）。
++    ///
++    /// 放在本类而非 BattleHelper：本类同时继承 AbstractTask（提供 protected 的
++    /// `callback()`）与 BattleHelper（提供状态成员），是唯一能同时够到两者的位置。
++    /// 状态组装见 `BattleHelper::battle_state_json()`。
++    void notify_battle_state();
++
+     bool wait_condition(const battle::copilot::Action& action);
+     bool enter_bullet_time(battle::Role role, const std::string& name, const std::optional<Point>& location);
+     void sleep_and_do_strategy(unsigned millisecond);

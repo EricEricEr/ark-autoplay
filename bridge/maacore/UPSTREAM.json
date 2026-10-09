@@ -1,0 +1,84 @@
+{
+  "repo_url": "https://github.com/MaaAssistantArknights/MaaAssistantArknights",
+  "ref": "dev-v2",
+  "pinned_commit": "a82a0e13c68d48cc21ec40380ac08c95f46e9802",
+  "pinned_commit_date": "2026-10-08T21:07:35Z",
+  "fetched_at": "2026-10-09",
+  "license": "AGPL-3.0-only",
+  "license_verified": true,
+  "additional_terms_exist": false,
+  "license_note": "已逐字核实：上游 LICENSE 与标准 AGPL-3.0 仅差 -661 字节，尾部即标准 AGPL 收尾；不存在附加条款。项目早期文档所称『AGPL-3.0 + 附加条款』系基于传闻的假设，已修正。",
+  "terms_of_service": {
+    "path": "terms-of-service.md",
+    "note": "与 AGPL 并列且独立：管使用行为而非代码分发。要点见 ./README.md。",
+    "key_constraints": [
+      "§2.2 MAA Logo 不适用 AGPL，未经许可不得商用",
+      "§2.3 严禁宣称与 MAA Team 存在合作关系",
+      "§3.1 禁止在森空岛与鹰角官方账号交互区讨论/传播 MAA",
+      "§3.4 禁止用于工作室批量刷号等非法活动",
+      "§2.4 最终用户不修改 MAA 时使用与分发不受限"
+    ]
+  },
+  "submodules": {
+    "src/MaaUtils": {
+      "url": "https://github.com/MaaXYZ/MaaUtils",
+      "commit": "6e9ba33f6ad835418097d9324c01c44a82825a2b",
+      "required": true,
+      "note": "提供 maadeps 依赖框架与 meojson；缺它无法配置 CMake"
+    },
+    "3rdparty/EmulatorExtras": {"required": false, "note": "仅 WITH_EMULATOR_EXTRAS=ON 时需要"},
+    "src/maa-cli": {"required": false},
+    "src/MaaMacGui": {"required": false},
+    "src/MAAUnified": {"required": false},
+    "test": {"required": false, "note": "测试集，较大"}
+  },
+  "deps": {
+    "repo": "MaaAssistantArknights/MaaDeps",
+    "version": "v2.14.1",
+    "triplet": "maa-x64-windows",
+    "assets": [
+      "MaaDeps-x64-windows-devel.tar.xz (247.2 MB)",
+      "MaaDeps-x64-windows-runtime.tar.xz (65.8 MB)"
+    ],
+    "note": "预编译包（OpenCV 4.12.0 / ONNXRuntime / Boost / fastdeploy_ppocr / ZLIB 1.3.1 / TIFF 4.7.1），无需自建第三方库",
+    "download_tool": "curl（实测 1.03 MB/s；Python urllib 仅 0.06 MB/s，慢 15 倍以上）"
+  },
+  "sparse_checkout_paths": [
+    "/src/MaaCore/**",
+    "/src/MaaUtils/**",
+    "/include/**",
+    "/cmake/**",
+    "/3rdparty/include/**",
+    "/tools/**",
+    "/.github/**",
+    "/CMakeLists.txt",
+    "/CMakePresets.json"
+  ],
+  "build": {
+    "toolchain": "MSVC 19.44.35229.0 (VS 2022 Build Tools 17.14.41) + Windows SDK 10.0.26100.0",
+    "generator": "Visual Studio 17 2022",
+    "cmake_options": [
+      "-DBUILD_WPF_GUI=OFF",
+      "-DBUILD_DEBUG_DEMO=OFF",
+      "-DBUILD_RESOURCE_UPDATER=OFF",
+      "-DINSTALL_RESOURCE=OFF",
+      "-DINSTALL_PYTHON=OFF",
+      "-DWITH_EMULATOR_EXTRAS=OFF",
+      "-DMAADEPS_TRIPLET=maa-x64-windows"
+    ],
+    "output": "build/bin/Release/MaaCore.dll",
+    "verified": true,
+    "verified_date": "2026-10-09",
+    "verified_size_bytes": 6256640
+  },
+  "patches": [
+    {
+      "file": "../patches/0001-battle-state-callback.patch",
+      "doc": "../patches/0001-battle-state-callback.md",
+      "summary": "新增 SubTaskExtraInfo 回调 what=BattleState，导出费用/击杀/待部署栏/已部署干员",
+      "scale": "4 文件 +90 行 0 删除（纯新增）",
+      "applies_clean": true,
+      "verified_in_binary": ["BattleState", "is_usual_location", "total_kills"]
+    }
+  ]
+}

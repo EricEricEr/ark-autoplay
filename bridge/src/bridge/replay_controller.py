@@ -43,7 +43,13 @@ from typing import Any
 from bridge.battle_state import battle_state_to_record, summarize_states
 from bridge.episode_writer import EpisodeWriter
 from bridge.maa_driver import MaaDriver, load_instance_config
-from bridge.nav_maa import PRTS_TASKS, NavigationError, navigate_only, wait_settle
+from bridge.nav_maa import (
+    PRTS_TASKS,
+    NavigationError,
+    navigate_only,
+    wait_idle,
+    wait_settle,
+)
 from bridge.state_logger import StateLogger
 
 # 数据集动作类型 → MAA 作业动作白名单（其余如 Output/MoveCamera 丢弃）
@@ -226,6 +232,7 @@ class ReplayController:
             )
 
         # 两段式（对应 ADR-0002 的正确版）：
+        #   0) 先把游戏带回主界面（StartUp）——**每局都必须做**；
         #   1) 用 Fight(nav_only=True) 把游戏从主页导航到关卡准备界面
         #      —— 依赖 patch 0002，只导航不开打、不碰游戏内代理作战；
         #   2) 交给 Copilot 忠实回放 prts.plus 玩家作业。
@@ -234,6 +241,16 @@ class ReplayController:
         # 而普通 Fight 会走 UsePrts（实测 Fight@PRTS1 出现 13 次），
         # 自抽号的代理记录是号商机械刷出的异常数值，对训练无价值。
         # 详见 bridge/docs/adr/0003~0005 与 nav_maa 模块 docstring。
+        #
+        # ⚠️ 第 0 步是**批量场景的必需项**（实测教训）：`Fight` 的 `StageBegin`
+        # 要求从已知界面起步；上一局结束后游戏可能停在结算/地图/任意界面，
+        # 直接 nav_only 会让 `StageBegin` 立即 SubTaskError、整批全灭
+        # （实测 20 局批量 ok 0/20，每局仅 6 秒即失败）。
+        if not wait_settle(self._driver, timeout_s=_SETTLE_TIMEOUT_S):
+            print(f"[job {job_id}] 前置回主页失败（StartUp）", flush=True)
+            summary.update(ok=False, error="pre: StartUp 失败")
+            return summary
+
         nav_ok = False
         try:
             nav_ok = navigate_only(self._driver, stage_code)
@@ -274,7 +291,12 @@ class ReplayController:
             return summary
 
         mark = self._driver.mark()
-        if not self._driver.start():
+        started = self._driver.start()
+        if not started:
+            # 助手未空闲时 start() 会直接返回 False（见 nav_maa.wait_idle 说明）。
+            # 由 navigate_only 返回前已等到空闲，此处属兜底重试。
+            started = wait_idle(self._driver, timeout_s=30.0) and self._driver.start()
+        if not started:
             logger.stop()
             summary.update(ok=False, error="asst.start 失败")
             return summary

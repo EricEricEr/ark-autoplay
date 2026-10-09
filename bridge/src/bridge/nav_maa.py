@@ -185,18 +185,58 @@ def navigate_only(driver: MaaDriver, stage_code: str, timeout_s: float = 180.0) 
             f"append_task(Fight, nav_only=True) 返回 0: {stage_code}"
             "（关卡名不被 MAA 接受，或 MaaCore 未打 patch 0002）"
         )
-    mark = driver.mark()
     if not driver.start():
-        return False
+        # 上一个任务链尚未完全空闲时 start() 会直接返回 False。
+        # 实测：连续「StartUp → Fight」时若不等 AllTasksCompleted，
+        # Fight 会被 append 成功但 start 立即失败（日志 `Start | block` +
+        # `leave, 0 ms`），表现为导航"秒失败"。
+        # 这里再等一次空闲后重试一次，仍失败才认输。
+        if not wait_idle(driver, timeout_s=30.0):
+            return False
+        if not driver.start():
+            return False
+
+    mark = driver.mark()
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         evts, mark = driver.events_since(mark)
         for evt in evts:
             if evt.msg in ("TaskChainCompleted", "AllTasksCompleted"):
+                # 等到真正空闲再返回，供调用方紧接着下发下一个任务
+                wait_idle(driver, timeout_s=20.0)
                 return True
-            if evt.msg == "TaskChainError":
+            if evt.msg in ("TaskChainError", "TaskChainStopped"):
                 return False
         time.sleep(0.2)
+    return False
+
+
+def wait_idle(driver: MaaDriver, timeout_s: float = 30.0) -> bool:
+    """等待 MAA 完全空闲（可安全下发并 start 下一个任务）。
+
+    为什么需要它（实测教训）：``TaskChainCompleted`` 只表示**该链的任务跑完**，
+    之后还会依次发出 ``AllTasksCompleted`` 与 ``TaskChainStopped``；
+    在这两个事件落地前 assistant 仍处于忙碌态，此时 ``start()`` 会**直接返回
+    False**（日志表现为 ``Start | block`` 紧跟 ``leave, 0 ms``），
+    导致同一 driver 连续跑多任务时"秒失败"。
+
+    故凡是"一个 driver 连续下发多个任务"的流程，切换任务前都要等到空闲。
+    返回是否在超时内观察到空闲信号。
+    """
+    mark = driver.mark()
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        evts, mark = driver.events_since(mark)
+        for evt in evts:
+            if evt.msg in ("AllTasksCompleted", "TaskChainStopped"):
+                # 再排空一拍，确保没有紧随其后的事件
+                time.sleep(0.3)
+                driver.events_since(driver.mark())
+                return True
+        if not driver.running():
+            time.sleep(0.3)
+            return True
+        time.sleep(0.15)
     return False
 
 
@@ -207,19 +247,25 @@ def wait_settle(driver: MaaDriver, timeout_s: float = 300.0) -> bool:
     结算。交给 MAA 的 ``StartUp``：它会自己识别并处理结算画面、公告等弹窗，
     不依赖像素阈值（原做法是轮询蓝钮像素点屏幕，已废弃）。
 
-    返回是否在超时内完成。
+    返回是否在超时内完成。**返回前会等到 MAA 完全空闲**（见 :func:`wait_idle`），
+    以便调用方紧接着下发下一个任务（否则 `start()` 会因助手仍忙碌而秒失败）。
     """
     tid = driver.append_task("StartUp", {"client_type": "Official"})
     if not tid:
         return False
     mark = driver.mark()
     if not driver.start():
-        return False
+        # 与 navigate_only 同理：助手未空闲时 start 直接失败，等一下再试
+        if not wait_idle(driver, timeout_s=30.0):
+            return False
+        if not driver.start():
+            return False
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         evts, mark = driver.events_since(mark)
         for evt in evts:
             if evt.msg in ("TaskChainCompleted", "AllTasksCompleted"):
+                wait_idle(driver, timeout_s=20.0)
                 return True
             if evt.msg == "TaskChainError":
                 return False

@@ -1,0 +1,79 @@
+diff --git a/src/MaaCore/Task/Interface/CopilotTask.cpp b/src/MaaCore/Task/Interface/CopilotTask.cpp
+index 35fd2dd..728b12d 100644
+--- a/src/MaaCore/Task/Interface/CopilotTask.cpp
++++ b/src/MaaCore/Task/Interface/CopilotTask.cpp
+@@ -22,6 +22,14 @@ asst::CopilotTask::CopilotTask(const AsstCallback& callback, Assistant* inst) :
+ {
+     LogTraceFunction;
+ 
++    // [PATCH 0004] 红线护栏：本局开打前确认"代理指挥"为 OFF。
++    // 必须排在**所有**子任务之前——关卡详情页的勾选框只在点「开始行动」之前可见，
++    // 一旦开打就再也够不到。
++    auto prts_guard_ptr = std::make_shared<MultiCopilotTaskPlugin>(callback, inst, TaskType);
++    prts_guard_ptr->set_prts_guard_only(true);
++    prts_guard_ptr->set_retry_times(0);
++    m_subtasks.emplace_back(prts_guard_ptr);
++
+     m_multi_copilot_plugin_ptr->set_retry_times(0);
+     m_multi_copilot_plugin_ptr->set_battle_task_ptr(m_battle_task_ptr);
+     m_subtasks.emplace_back(m_multi_copilot_plugin_ptr);
+diff --git a/src/MaaCore/Task/Interface/FightTask.cpp b/src/MaaCore/Task/Interface/FightTask.cpp
+index 6501f17..f2da70e 100644
+--- a/src/MaaCore/Task/Interface/FightTask.cpp
++++ b/src/MaaCore/Task/Interface/FightTask.cpp
+@@ -199,6 +199,17 @@ bool asst::FightTask::set_params(const json::value& params)
+     // 正常返回成功 —— 即"导航到准备界面后干净收尾"。
+     if (nav_only) {
+         Log.info(__FUNCTION__, "nav_only enabled: navigate only, no battle");
++        // [PATCH 0004] 导航链绝不点开"代理指挥"勾选框。
++        // 实测（asst.log）：nav_only 下 Fight@UsePrts 仍被选中 7 次、UsePrts.png
++        // 命中 21 次（score 0.967）——点击来自 StageBegin→Fight→FightBegin 这条
++        // next 链（m_start_up_task_ptr）；上游只对 StartButton1/PRTS* 设了 0 次限制，
++        // **漏了 UsePrts**。times_limit 按"最长后缀"匹配（ProcessTask.cpp:488），
++        // 故 "UsePrts" 同时覆盖 Fight@UsePrts；"-StageSN"/"-Annihilation" 是独立后缀。
++        for (const auto& chain : { m_start_up_task_ptr, m_fight_task_ptr }) {
++            chain->set_times_limit("UsePrts", 0)
++                .set_times_limit("UsePrts-StageSN", 0)
++                .set_times_limit("UsePrts-Annihilation", 0);
++        }
+         m_fight_task_ptr->set_enable(false);
+         m_sidestory_reopen_task_ptr->set_enable(false);
+         m_stage_drops_plugin_ptr->set_enable(false);
+diff --git a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp
+index 5f45429..f9c26e4 100644
+--- a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp
++++ b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp
+@@ -17,6 +17,12 @@
+ bool asst::MultiCopilotTaskPlugin::_run()
+ {
+     LogTraceFunction;
++
++    // [PATCH 0004] 护栏专用模式：只做"代理指挥必须为 OFF"的判定/取消，返回失败即中止本局。
++    if (m_prts_guard_only) {
++        return ensure_prts_disabled();
++    }
++
+     if (m_copilot_configs.size() < (size_t)m_index_current) {
+         LogError << __FUNCTION__ << "configs size:" << m_copilot_configs.size() << ", current index:" << m_index_current
+                  << ", out of range";
+diff --git a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h
+index 24b7216..4adc828 100644
+--- a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h
++++ b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h
+@@ -29,6 +29,9 @@ public:
+ 
+     void set_battle_task_ptr(const std::shared_ptr<BattleProcessTask>& ptr) { m_battle_task_ptr = ptr; }
+ 
++    /// [PATCH 0004] 护栏专用模式：_run() 只做代理指挥开关的判定/取消，不做导航与配置读取。
++    void set_prts_guard_only(bool value) { m_prts_guard_only = value; }
++
+ private:
+     virtual bool _run() override;
+     bool navigate_to_stage(const std::string& stage_name);
+@@ -47,5 +50,6 @@ private:
+     int m_index_current = 0; // 当前执行的索引
+     std::shared_ptr<BattleProcessTask> m_battle_task_ptr = nullptr;
+     int m_max_retry = 20;
++    bool m_prts_guard_only = false; // [PATCH 0004]
+ };
+ }

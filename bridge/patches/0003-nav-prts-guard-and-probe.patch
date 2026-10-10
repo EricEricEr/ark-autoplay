@@ -1,0 +1,279 @@
+diff --git a/src/MaaCore/Task/BattleHelper.cpp b/src/MaaCore/Task/BattleHelper.cpp
+index f784b81..539af9f 100644
+--- a/src/MaaCore/Task/BattleHelper.cpp
++++ b/src/MaaCore/Task/BattleHelper.cpp
+@@ -1,6 +1,13 @@
+ #include "BattleHelper.h"
+ 
++#include <chrono>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <filesystem>
++#include <fstream>
+ #include <future>
++#include <mutex>
+ #include <thread>
+ 
+ #include "Config/GeneralConfig.h"
+@@ -25,6 +32,100 @@
+ 
+ using namespace asst::battle;
+ 
++// [PATCH 0003] BattleState 探针。
++//
++// 目的：patch 0001 已把 costs/kills 写进 BattleState 回调，但实测恒 0。要区分
++// 「update_* 根本没被调用」与「调用了但识别没成功」，只能在这两个函数内部打点。
++// 结果以逐行 JSON 追加到 debug/probe_battlestate.jsonl（相对进程 cwd，可用环境变量
++// ARK_BATTLESTATE_PROBE 覆盖为绝对路径），字段含 fn / n_cost / n_kills / has_result /
++// status_id / success / costs / kills / total_kills / has_prev / job_id(环境变量 ARK_JOB_ID)。
++// 只读既有成员与识别结果，不改动任何识别/决策逻辑。
++namespace
++{
++std::mutex s_probe_mutex;
++std::uint64_t s_probe_cost_calls = 0;
++std::uint64_t s_probe_kills_calls = 0;
++std::uint64_t s_probe_lines = 0;
++bool s_probe_open_failed_logged = false;
++
++// MSVC 下 std::getenv 会触发 C4996（本项目按错误处理），改用 _dupenv_s。
++std::string probe_env_value(const char* name)
++{
++#ifdef _MSC_VER
++    char* buffer = nullptr;
++    size_t size = 0;
++    if (_dupenv_s(&buffer, &size, name) != 0 || buffer == nullptr) {
++        return {};
++    }
++    std::string value(buffer);
++    free(buffer);
++    return value;
++#else
++    if (const char* value = std::getenv(name); value != nullptr) {
++        return std::string(value);
++    }
++    return {};
++#endif
++}
++
++std::filesystem::path probe_battlestate_file_path()
++{
++    const std::string env = probe_env_value("ARK_BATTLESTATE_PROBE");
++    if (!env.empty()) {
++        return std::filesystem::path(env);
++    }
++    return std::filesystem::path("debug") / "probe_battlestate.jsonl";
++}
++
++void probe_battle_state(
++    const char* fn,
++    bool has_result,
++    int status_id,
++    bool success,
++    int costs,
++    int kills,
++    int total_kills,
++    bool has_prev)
++{
++    std::lock_guard<std::mutex> lock(s_probe_mutex);
++    if (std::strcmp(fn, "update_cost") == 0) {
++        ++s_probe_cost_calls;
++    }
++    else {
++        ++s_probe_kills_calls;
++    }
++    if (s_probe_lines >= 200000) {
++        return;
++    }
++    ++s_probe_lines;
++
++    const auto path = probe_battlestate_file_path();
++    std::error_code ec;
++    if (!path.parent_path().empty()) {
++        std::filesystem::create_directories(path.parent_path(), ec);
++    }
++    std::ofstream ofs(path, std::ios::app | std::ios::binary);
++    if (!ofs) {
++        if (!s_probe_open_failed_logged) {
++            s_probe_open_failed_logged = true;
++            Log.error("BattleState probe: cannot open", path.string(), ec.message());
++        }
++        return;
++    }
++
++    const auto now_ms =
++        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
++            .count();
++    const std::string job_id = probe_env_value("ARK_JOB_ID");
++    ofs << "{\"t_ms\":" << now_ms << ",\"fn\":\"" << fn << "\",\"n_cost\":" << s_probe_cost_calls
++        << ",\"n_kills\":" << s_probe_kills_calls << ",\"has_result\":" << (has_result ? "true" : "false")
++        << ",\"status_id\":" << status_id << ",\"success\":" << (success ? "true" : "false")
++        << ",\"costs\":" << costs << ",\"kills\":" << kills << ",\"total_kills\":" << total_kills
++        << ",\"has_prev\":" << (has_prev ? "true" : "false") << ",\"job_id\":\"" << job_id << "\"}\n";
++    ofs.flush();
++}
++}
++
+ asst::BattleHelper::BattleHelper(Assistant* inst) :
+     m_inst_helper(inst)
+ {
+@@ -379,11 +480,29 @@ bool asst::BattleHelper::update_kills(const cv::Mat& image, const cv::Mat& image
+     }
+     auto result_opt = analyzer.analyze();
+     if (!result_opt || result_opt->kills.status == BattlefieldMatcher::MatchStatus::Invalid) {
++        probe_battle_state(
++            "update_kills",
++            result_opt.has_value(),
++            result_opt ? static_cast<int>(result_opt->kills.status) : -1,
++            false,
++            static_cast<int>(m_cost),
++            static_cast<int>(m_kills),
++            static_cast<int>(m_total_kills),
++            !image_prev.empty());
+         return false;
+     }
+     if (result_opt->kills.status == BattlefieldMatcher::MatchStatus::Success) {
+         std::tie(m_kills, m_total_kills) = result_opt->kills.value;
+     }
++    probe_battle_state(
++        "update_kills",
++        true,
++        static_cast<int>(result_opt->kills.status),
++        result_opt->kills.status == BattlefieldMatcher::MatchStatus::Success,
++        static_cast<int>(m_cost),
++        static_cast<int>(m_kills),
++        static_cast<int>(m_total_kills),
++        !image_prev.empty());
+     return true;
+ }
+ 
+@@ -394,11 +513,29 @@ bool asst::BattleHelper::update_cost(const cv::Mat& image, const cv::Mat& image_
+     analyzer.set_image_prev(image_prev);
+     auto result_opt = analyzer.analyze();
+     if (!result_opt || result_opt->costs.status == BattlefieldMatcher::MatchStatus::Invalid) {
++        probe_battle_state(
++            "update_cost",
++            result_opt.has_value(),
++            result_opt ? static_cast<int>(result_opt->costs.status) : -1,
++            false,
++            static_cast<int>(m_cost),
++            static_cast<int>(m_kills),
++            static_cast<int>(m_total_kills),
++            !image_prev.empty());
+         return false;
+     }
+     else if (result_opt->costs.status == BattlefieldMatcher::MatchStatus::Success) {
+         m_cost = result_opt->costs.value;
+     }
++    probe_battle_state(
++        "update_cost",
++        true,
++        static_cast<int>(result_opt->costs.status),
++        result_opt->costs.status == BattlefieldMatcher::MatchStatus::Success,
++        static_cast<int>(m_cost),
++        static_cast<int>(m_kills),
++        static_cast<int>(m_total_kills),
++        !image_prev.empty());
+     return true;
+ }
+ 
+diff --git a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp
+index 7cb3b6e..5f45429 100644
+--- a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp
++++ b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp
+@@ -56,7 +56,10 @@ bool asst::MultiCopilotTaskPlugin::_run()
+         }
+     }
+ 
+-    ProcessTask(*this, { "NotUsePrts" }).set_ignore_error(true).set_retry_times(0).run();
++    // [PATCH 0003] 代理作战开关：显式判定 + 失败上报，不再是 ignore_error 静默跳过。
++    if (!ensure_prts_disabled()) {
++        return false;
++    }
+     if (config.is_raid) {
+         // 选择突袭模式
+         ret = ret && ProcessTask(*this, { "RaidConfirm", "ChangeToRaidDifficulty" }).set_retry_times(20).run();
+@@ -65,6 +68,69 @@ bool asst::MultiCopilotTaskPlugin::_run()
+     return ret;
+ }
+ 
++/// [PATCH 0003] 简报页"代理作战"开关的显式判定与取消。
++///
++/// 上游写法 `ProcessTask({ "NotUsePrts" }).set_ignore_error(true).set_retry_times(0)`
++/// 把三种截然不同的局面都归结为"静默通过"：
++///   1. 代理未开启：简报页按钮是 UsePrts 形态，NotUsePrts 匹配不上 → 跳过（预期）；
++///   2. 代理**已开启**：本应点掉，但点击未生效时同样静默通过 → Copilot 会在代理作战
++///      模式下开打，游戏用内置代理记录顶替玩家作业（数据工厂拿到的是错轨迹）；
++///   3. 页面异常/模板不匹配 → 同样静默。
++/// 本方法先判状态再动作，每次判定都通过 SubTaskExtraInfo(what=CopilotPrtsState) 上报；
++/// 判定为"已开启"时点掉并复验，3 次仍开启则发 SubTaskError(what=CopilotPrtsToggleFailed)
++/// 并让本次 Copilot 失败——即"失败可见，不允许静默跳过"。
++bool asst::MultiCopilotTaskPlugin::ensure_prts_disabled()
++{
++    const auto matched = [&](const std::string& task_name) {
++        PipelineAnalyzer match(ctrler()->get_image());
++        match.set_tasks({ task_name });
++        return match.analyze().has_value();
++    };
++    const auto notify = [&](const char* state_before, const char* state_after, const char* note) {
++        json::value info = basic_info_with_what("CopilotPrtsState");
++        info["details"]["state_before"] = state_before;
++        info["details"]["state_after"] = state_after;
++        info["details"]["note"] = note;
++        callback(AsstMsg::SubTaskExtraInfo, info);
++    };
++
++    bool agent_on = matched("NotUsePrts");
++    const bool agent_off_btn = matched("UsePrts");
++
++    if (!agent_on) {
++        if (agent_off_btn) {
++            Log.info(__FUNCTION__, "agent battle is OFF at briefing page (UsePrts button present)");
++            notify("off", "off", "use_prts_button_present");
++        }
++        else {
++            // 两者都不匹配 = 状态未知：保留上游"继续执行"的语义（避免误伤没有该按钮的
++            // 关卡），但必须可见，不能无声跳过。
++            Log.warn(__FUNCTION__, "PRTS toggle state unknown: neither UsePrts nor NotUsePrts matched");
++            notify("unknown", "unknown", "prts_button_not_found");
++        }
++        return true;
++    }
++
++    Log.warn(__FUNCTION__, "agent battle is ON at briefing page, turning it off");
++    for (int attempt = 0; attempt < 3 && agent_on; ++attempt) {
++        ProcessTask(*this, { "NotUsePrts" }).set_retry_times(0).run();
++        sleep(Config.get_options().task_delay);
++        agent_on = matched("NotUsePrts");
++    }
++
++    if (agent_on) {
++        Log.error(__FUNCTION__, "failed to turn off agent battle: NotUsePrts still matched after 3 attempts");
++        notify("on", "on", "toggle_failed");
++        json::value err = basic_info_with_what("CopilotPrtsToggleFailed");
++        err["details"]["reason"] = "agent battle still ON after clicking NotUsePrts 3 times";
++        callback(AsstMsg::SubTaskError, err);
++        return false;
++    }
++
++    notify("on", "off", "turned_off");
++    return true;
++}
++
+ bool asst::MultiCopilotTaskPlugin::navigate_to_stage(const std::string& stage_name)
+ {
+     // 优先检查是否存在对应活动关卡名的模板资源，如果存在则走模板匹配
+diff --git a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h
+index da2ee98..24b7216 100644
+--- a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h
++++ b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h
+@@ -40,6 +40,9 @@ private:
+     bool is_stage_detail_opened(const cv::Mat& image); // 检查关卡介绍是否已展开
+     bool confirm_stage_name(const cv::Mat& image, const std::string& stage_name);
+ 
++    /// [PATCH 0003] 简报页代理作战开关的显式判定与取消（取代上游的静默跳过）。
++    bool ensure_prts_disabled();
++
+     std::vector<MultiCopilotConfig> m_copilot_configs;
+     int m_index_current = 0; // 当前执行的索引
+     std::shared_ptr<BattleProcessTask> m_battle_task_ptr = nullptr;

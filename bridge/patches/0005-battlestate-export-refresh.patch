@@ -1,0 +1,60 @@
+diff --git a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp
+index 15451a0..633c7a3 100644
+--- a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp
++++ b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp
+@@ -1,4 +1,4 @@
+-#include "BattleProcessTask.h"
++﻿#include "BattleProcessTask.h"
+ 
+ #include <chrono>
+ #include <future>
+@@ -230,6 +230,9 @@ bool asst::BattleProcessTask::do_action(const battle::copilot::Action& action, s
+     }
+ 
+     if (!wait_condition(action)) {
++        // [PATCH 0005] 战斗结束/等待失败时原逻辑直接 return，最后一个长时间等待动作
++        // 的战场状态（kills 已累计）永不导出，故此处补一条快照。
++        notify_battle_state();
+         return false;
+     }
+ 
+@@ -246,6 +249,11 @@ bool asst::BattleProcessTask::do_action(const battle::copilot::Action& action, s
+     const auto& [/*可unknown*/ role, name] = get_name_from_group(action.role, action.name);
+     const auto& location = action.location;
+ 
++    // [PATCH 0001] 动作执行前导出战场状态——这是 (state, action) 的配对点，
++    // 也是行为克隆要学的样本。放在此处可确保读到的 m_cost / m_kills /
++    // m_cur_deployment_opers 已由 wait_condition() 与上面的 update_deployment() 刷新。
++    notify_battle_state();
++
+     switch (action.type) {
+     case ActionType::Deploy:
+         // Deploy 语义上必填 location，未填时按 [0, 0] 部署（与历史版本 json 缺失时的行为一致）
+@@ -448,6 +456,27 @@ void asst::BattleProcessTask::notify_action(const battle::copilot::Action& actio
+     callback(AsstMsg::SubTaskExtraInfo, info);
+ }
+ 
++/// [PATCH 0001] 发送战场状态（what = "BattleState"）。
++///
++/// 触发时机：每次 `do_action()` 的 `wait_condition()` 之后——即**每个作业动作
++/// 执行前的那个决策时刻**。这正是行为克隆需要的 (state, action) 配对点。
++///
++/// 附带说明：`wait_condition()` 内部会在等待条件满足时更新 m_cost / m_kills /
++/// m_cur_deployment_opers，故此处读到的是"该动作即将执行时的战场状态"。
++void asst::BattleProcessTask::notify_battle_state()
++{
++    // [PATCH 0005] 导出前无条件刷新一次：catch 行动作未声明 kills/costs 条件时，
++    // wait_condition() 不会调用 update_kills()/update_cost()，导致导出恒 0。
++    if (const cv::Mat image = ctrler()->get_image(); !image.empty()) {
++        update_kills(image);
++        update_cost(image);
++    }
++
++    json::value info = basic_info_with_what("BattleState");
++    info["details"] = battle_state_json();
++    callback(AsstMsg::SubTaskExtraInfo, info);
++}
++
+ bool asst::BattleProcessTask::wait_condition(const Action& action)
+ {
+     cv::Mat image, image_prev;

@@ -26,7 +26,9 @@ class _FakeDriver:
         self._cursor = 0
         self.appended: list[tuple[str, str, bool]] = []
 
-    def append_copilot(self, job_path, formation: bool = True) -> int:
+    def append_copilot(
+        self, job_path, formation: bool = True, support_unit_usage: int = 0
+    ) -> int:
         self.appended.append((str(job_path), "Copilot", formation))
         return self._append_ret
 

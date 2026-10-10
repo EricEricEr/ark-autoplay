@@ -231,8 +231,16 @@ class MaaDriver:
             raise RuntimeError("尚未 connect")
         return int(self._asst.append_task(task_type, params or {}))
 
-    def append_copilot(self, job_path: str | Path, formation: bool = True) -> int:
-        """下发 Copilot 自动战斗任务，返回 task id（0 表示参数被拒）。"""
+    def append_copilot(
+        self, job_path: str | Path, formation: bool = True, support_unit_usage: int = 0
+    ) -> int:
+        """下发 Copilot 自动战斗任务，返回 task id（0 表示参数被拒）。
+
+        ``support_unit_usage``（D4，2026-10-10 用户批准）：助战借用策略，
+        0=不用 / 1=WhenNeeded（恰好缺 1 组时由 MAA 借入作业缺失的那名干员，
+        名字由 MAA 自己推导，无需作业标注）/ 2=Specific / 3=Random。
+        缺省 0 保持既有行为，工厂路径显式传 1。
+        """
         if self._asst is None:
             raise RuntimeError("尚未 connect")
         return int(
@@ -242,6 +250,7 @@ class MaaDriver:
                     "filename": str(job_path),
                     "formation": formation,
                     "use_sanity_potion": False,
+                    "support_unit_usage": support_unit_usage,
                 },
             )
         )

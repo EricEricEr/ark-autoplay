@@ -7,6 +7,9 @@ bundle 结构与 ``data-validation/capture_episode.py`` 已验证格式一致：
 - ``episode.json``：轨迹清单（``protocol_version=0.1.0-draft``），含
   episode_id / 关卡 / 作业来源 / 作业文件 / 结算帧列表 /
   action_events.jsonl 路径 / 截图 sha256 清单 / 时长；
+- ``shots_dropped_black``（**可选**，D9 2026-10-10）：本局被判黑帧并丢弃的帧数，
+  由 StateLogger.shots_dropped_black 提供（节拍保持 1.5s，黑帧不落盘、只标注）；
+  非必填——旧 bundle 没有该字段仍合法，缺省视为"未统计"，不视为 0；
 - ``action_events.jsonl``：回调事件流 + 截图标记（相对毫秒时间戳）；
 - ``shots/``：节拍帧 + 动作触发帧 + 结算帧（**本机留存**，
   入仓内容仅限 sha256 清单——素材红线 §3.2/§6.3）。
@@ -106,6 +109,11 @@ class EpisodeWriter:
             raise ValueError("protocol_version 未戳或与当前版本不符")
         if not episode.get("shot_files"):
             raise ValueError("shot_files 为空（一局至少应有节拍/结算帧）")
+        dropped = episode.get("shots_dropped_black")
+        if dropped is not None and (
+            not isinstance(dropped, int) or isinstance(dropped, bool) or dropped < 0
+        ):
+            raise ValueError(f"shots_dropped_black 必须是非负整数，收到 {dropped!r}")
 
     def write_episode(self, run_dir: str | Path, episode: dict[str, Any]) -> Path:
         """戳协议版本、补齐截图清单、自检后写 ``episode.json``。"""

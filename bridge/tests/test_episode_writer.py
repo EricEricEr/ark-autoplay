@@ -99,3 +99,27 @@ def test_write_battle_states_empty_creates_no_file(tmp_path: Path) -> None:
     assert writer.write_battle_states(run_dir, []) is None
     assert not (run_dir / "battle_states.jsonl").exists()
 
+
+def test_validate_shots_dropped_black_is_optional_nonneg_int(tmp_path: Path) -> None:
+    """D9 标注字段：缺省合法（旧 bundle 兼容）；给出时必须是真整数且非负。"""
+    writer = EpisodeWriter(tmp_path)
+    run_dir = writer.begin("main_00-01", 1)
+    (run_dir / "shots" / "001_tick.png").write_bytes(b"\x89PNG-a")
+
+    ep = _fake_episode()
+    ep["shots_dropped_black"] = 3
+    written = json.loads(writer.write_episode(run_dir, ep).read_text(encoding="utf-8"))
+    assert written["shots_dropped_black"] == 3
+
+    ep_absent = _fake_episode()
+    saved = json.loads(
+        writer.write_episode(run_dir, ep_absent).read_text(encoding="utf-8")
+    )
+    assert "shots_dropped_black" not in saved
+
+    for bad in (-1, True, "3", 1.5):
+        ep_bad = _fake_episode()
+        ep_bad["shots_dropped_black"] = bad
+        with pytest.raises(ValueError):
+            writer.write_episode(run_dir, ep_bad)
+

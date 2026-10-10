@@ -127,3 +127,33 @@ def test_summarize_marks_absent_scalars():
     assert s["has_costs"] is False
     assert s["has_kills"] is False
     assert "costs_range" not in s
+
+
+def test_summarize_has_costs_kills_only_when_nonzero_observed() -> None:
+    """D10：字段存在但恒 0 时 has_* 必须为 False（上游实测 costs/kills 恒 0）。
+
+    与"没采到"仍可区分：字段在、值为 0，range 照给 [0, 0]（= 采到了，值确实是 0）。
+    """
+    recs = [
+        battle_state_to_record({"costs": 0, "kills": 0}, t_ms=0),
+        battle_state_to_record({"costs": 0, "kills": 0}, t_ms=1500),
+    ]
+    s = summarize_states(recs)
+    assert s["has_costs"] is False
+    assert s["has_kills"] is False
+    assert s["costs_range"] == [0, 0]
+    assert s["kills_range"] == [0, 0]
+
+
+def test_summarize_nonzero_in_any_single_record_sets_has_flag() -> None:
+    """只要有一条记录观测到非零即 True（不要求全部非零）。"""
+    recs = [
+        battle_state_to_record({"costs": 0, "kills": 0}, t_ms=0),
+        battle_state_to_record({"costs": 5, "kills": 0}, t_ms=100),
+        battle_state_to_record({"costs": 0, "kills": 2}, t_ms=200),
+    ]
+    s = summarize_states(recs)
+    assert s["has_costs"] is True
+    assert s["has_kills"] is True
+    assert s["costs_range"] == [0, 5]
+    assert s["kills_range"] == [0, 2]

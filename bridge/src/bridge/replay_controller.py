@@ -33,6 +33,7 @@ CopilotAction 即时补拍 + 结算抓帧）→ 写 episode 束（bundle 结构�
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import sys
@@ -50,7 +51,7 @@ from bridge.nav_maa import (
     wait_idle,
     wait_settle,
 )
-from bridge.state_logger import StateLogger
+from bridge.state_logger import StateLogger, is_dropped_shot
 
 # 数据集动作类型 → MAA 作业动作白名单（其余如 Output/MoveCamera 丢弃）
 _MAA_ACTION_TYPES = ("Deploy", "Skill", "Retreat", "SpeedUp", "SkillDaemon")
@@ -59,6 +60,12 @@ _CHAIN_TIMEOUT_S = 480.0
 """任务链最长执行时间（防卡死保护）。"""
 
 _SETTLE_TIMEOUT_S = 300.0
+
+# D4（2026-10-10 用户批准）：助战借用。1 = WhenNeeded——MAA 在“恰好缺 1 组”时
+# 自动借入作业缺失的那名干员（名字由 MAA 推导）。用户原话：很多地图就是要靠助战借用的。
+# 理论可达 v3 767 中的 721 条；实测 510/617 可直接命中，107 条需 D5 groups 支持。
+# 置 0 可回到“不借用”的旧行为（对账/复现旧数据时用）。
+_SUPPORT_UNIT_USAGE = 1
 """作战自然结束+结算推进的最长等待。"""
 
 
@@ -158,6 +165,53 @@ def dataset_record_to_job_entry(rec: dict[str, Any]) -> dict[str, Any]:
     return {"source": source, "maa_job": maa_job}
 
 
+def assert_patched_runtime(inst: dict[str, Any], cfg_path: str | Path) -> None:
+    """拒绝用未打补丁的官方运行时跑批（2026-10-10 事故，见 docs/adr/0006）。
+
+    官方 MaaCore 不含 patch 0001-0004：``nav_only`` 失效 → Fight 走完整刷图链
+    直接开打，并**启用游戏内代理指挥**（自抽号的号商存档）——正是用户红线：
+    代理数据零价值且会污染数据集。默认实例曾经指错目录，导致 09:45 之后的所有
+    批次都在跑官方 DLL，且现场无任何报错。这里在装配阶段就 fail fast。
+    """
+    maa_dir = str(inst.get("maa_dir", "")).replace("\\", "/")
+    if "maa_runtime_patched" not in maa_dir:
+        raise RuntimeError(
+            f"instance={cfg_path} 的 maa_dir={maa_dir!r} 不是打过补丁的运行时，"
+            "拒绝启动：未打补丁时 nav_only 失效、Fight 会直接开打并启用游戏内代理指挥。"
+            "请使用 configs/instances/mumu_local_patched.yaml。"
+        )
+
+
+def normalize_groups(groups: Any) -> list[dict[str, Any]]:
+    """把 prts 形态的候选干员组修成 MAA Copilot schema（2026-10-10 实测缺陷）。
+
+    prts.plus 把候选组写成 ``{"name":..., "options":[{name,id,skill},...]}``；
+    MAA 的 CopilotConfig 读的是 ``group_info.at("opers")``（CopilotConfig.cpp:168）。
+    元素是 OperUsage。原样下发会被 set_params 拒绝 —— AsstAppendTask 返回 0、
+    asst.log 出现 ``CopilotConfig parse failed``，整局白跑（实测 job_64196）。
+    这里统一改名并只保留 MAA 认识的字段（``id`` 是 prts 内部字段，剔掉；
+    req 维持与顶层 opers 同口径 = 不带 requirements，即不卡练度）。
+    """
+    out: list[dict[str, Any]] = []
+    for g in groups or []:
+        if not isinstance(g, dict):
+            continue
+        src = g.get("opers") if g.get("opers") is not None else (g.get("options") or [])
+        ops: list[dict[str, Any]] = []
+        for op in src:
+            if not isinstance(op, dict) or not op.get("name"):
+                continue
+            item: dict[str, Any] = {"name": op["name"]}
+            if isinstance(op.get("skill"), int) and op["skill"] > 0:
+                item["skill"] = op["skill"]
+            if op.get("skill_usage") is not None:
+                item["skill_usage"] = op["skill_usage"]
+            ops.append(item)
+        if ops:
+            out.append({"name": g.get("name") or "组", "opers": ops})
+    return out
+
+
 def load_jobs(path: str | Path) -> list[dict[str, Any]]:
     """读取 jobs 定义文件（支持 {"jobs":[...]} 或裸 list）。"""
     with open(path, encoding="utf-8") as f:
@@ -186,15 +240,21 @@ class ReplayController:
         (self._work / "tmp" / "maa_jobs").mkdir(parents=True, exist_ok=True)
         maa_user = self._work / "debug" / "maa_user"
         maa_user.mkdir(parents=True, exist_ok=True)
-        self._driver = MaaDriver(load_instance_config(instance_cfg_path), maa_user)
+        inst = load_instance_config(instance_cfg_path)
+        assert_patched_runtime(inst, instance_cfg_path)
+        self._driver = MaaDriver(inst, maa_user)
         # 不再需要独立导航器：Copilot 自带导航（见 nav_maa 模块 docstring）。
         # nav_cfg_path 仅保留签名兼容，几何标定表已废弃。
         self._writer = EpisodeWriter(self._work)
 
     def _write_maa_job(self, entry: dict[str, Any]) -> Path:
         path = self._work / "tmp" / "maa_jobs" / f"job_{entry['source']['job_id']}.json"
+        mj = dict(entry["maa_job"])
+        # groups 必须归一化成 MAA schema，否则 CopilotConfig 直接解析失败、整局白跑
+        if mj.get("groups"):
+            mj["groups"] = normalize_groups(mj["groups"])
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(entry["maa_job"], f, ensure_ascii=False, indent=1)
+            json.dump(mj, f, ensure_ascii=False, indent=1)
         return path
 
     def _run_one(self, entry: dict[str, Any]) -> dict[str, Any]:
@@ -247,10 +307,30 @@ class ReplayController:
         # 直接 nav_only 会让 `StageBegin` 立即 SubTaskError、整批全灭
         # （实测 20 局批量 ok 0/20，每局仅 6 秒即失败）。
         if not wait_settle(self._driver, timeout_s=_SETTLE_TIMEOUT_S):
-            print(f"[job {job_id}] 前置回主页失败（StartUp）", flush=True)
-            summary.update(ok=False, error="pre: StartUp 失败")
-            return summary
+            # 实测（2026-10-10 批量）：收尾瞬间的弹窗/非主页态会让 StartUp 链偶发失败，
+            # 而**紧接重试往往 8 秒内即成功**。故这里做有界重试，避免把可恢复的局
+            # 直接记成 pre 失败（v6 批量里这类损失占 3/20）。
+            recovered = False
+            for attempt in (1, 2):
+                if wait_idle(self._driver, timeout_s=20.0) and wait_settle(
+                    self._driver, timeout_s=_SETTLE_TIMEOUT_S
+                ):
+                    recovered = True
+                    print(
+                        f"[job {job_id}] 前置回主页第 {attempt} 次重试成功", flush=True
+                    )
+                    break
+                print(f"[job {job_id}] 前置回主页重试 {attempt} 仍失败", flush=True)
+            if not recovered:
+                print(f"[job {job_id}] 前置回主页失败（StartUp）", flush=True)
+                summary.update(ok=False, error="pre: StartUp 失败（已重试 2 次）")
+                return summary
 
+        # 2026-10-10：预导航（Fight nav_only）是**唯一**能导航到关卡准备界面的路径——
+        # 实测去掉它后 Copilot 链直接 StartUp→BattleStartAll 不导航（卡在章节地图）。
+        # 但它同时是**游戏内代理指挥的源头**（MAA 的 Fight 是刷图任务，会点开
+        # 关卡详情页的“代理指挥”勾选框）。红线要求该勾选框必须为 OFF —— 由 DLL 侧
+        # 根治（见 bridge/patches/0004 任务），桥侧无法在详情页插手中途步骤。
         nav_ok = False
         try:
             nav_ok = navigate_only(self._driver, stage_code)
@@ -262,10 +342,7 @@ class ReplayController:
             print(f"[job {job_id}] 导航未完成（{stage_code}）", flush=True)
             summary.update(ok=False, error="nav: 未到准备界面")
             return summary
-        print(
-            f"[job {job_id}] ✓ 已导航到 {stage_code} 准备界面（nav_only）",
-            flush=True,
-        )
+        print(f"[job {job_id}] 已导航到 {stage_code} 准备界面（nav_only）", flush=True)
 
         run_dir = self._writer.begin(stage_id, job_id)
         job_file = self._write_maa_job(entry)
@@ -282,7 +359,9 @@ class ReplayController:
         logger.start()
         logger.snap("briefing")
 
-        tid = self._driver.append_copilot(job_file, formation=True)
+        tid = self._driver.append_copilot(
+            job_file, formation=True, support_unit_usage=_SUPPORT_UNIT_USAGE
+        )
         if tid <= 0:
             logger.stop()
             print(f"[job {job_id}] append_copilot 被拒绝 (tid={tid})", flush=True)
@@ -306,7 +385,33 @@ class ReplayController:
         terminal: str | None = None
         seen_actions = 0
         prts_seen: list[str] = []
+        # 战后阶段（Copilot 链结束之后）命中的 PRTS 任务名，单独记账供下游判断
+        prts_after: list[str] = []
+        # 失败子任务留痕：汇总里必须能直接看出失败阶段与原因，
+        # 否则 Copilot 阶段失败（如 BattleFormationTask OperatorMissing）只能翻日志。
+        failures: list[str] = []
         deadline = time.monotonic() + _CHAIN_TIMEOUT_S
+
+        def scan_prts(evt: Any, *, after: bool) -> None:
+            """代理护栏（整局扫描）：prts_detected 必须覆盖全流程。
+
+            2026-10-10 实测缺陷：原先只在 Copilot 阶段扫（drain 内），收尾/
+            StartUp 阶段的事件虽被 rec() 记录却不扫描，导致 22/42 局命中
+            PRTS_TASKS 而 prts_detected 仍为空（漏报）。after=True 表示该事件
+            发生在 Copilot 链结束之后，单独记账便于下游区分战后清理分支。
+            """
+            d = evt.details if isinstance(evt.details, dict) else {}
+            det = d.get("details") if isinstance(d.get("details"), dict) else {}
+            t = str(d.get("task") or det.get("task") or d.get("cur_task") or "")
+            if not t:
+                return
+            tail = t.rsplit("@", 1)[-1]
+            if tail not in PRTS_TASKS:
+                return
+            if tail not in prts_seen:
+                prts_seen.append(tail)
+            if after and tail not in prts_after:
+                prts_after.append(tail)
 
         def drain(fresh: list[Any]) -> None:
             """处理一批事件（收尾时也要跑，见下方说明）。"""
@@ -323,18 +428,18 @@ class ReplayController:
                     elif what == "BattleState":
                         # patched MaaCore 才有；官方发行版不会走到这里
                         rec_state(evt.details.get("details") or {})
+                elif evt.msg == "SubTaskError":
+                    d0 = evt.details if isinstance(evt.details, dict) else {}
+                    raw_inner = d0.get("details")
+                    inner = raw_inner if isinstance(raw_inner, dict) else {}
+                    cls = str(d0.get("class", "")).rsplit("::", 1)[-1]
+                    first = d0.get("first") or []
+                    why = inner.get("why") or d0.get("why") or ""
+                    tag = f"{cls}:{'/'.join(str(x) for x in first)}"
+                    failures.append(f"{tag} why={why}" if why else tag)
                 elif evt.msg in ("TaskChainCompleted", "TaskChainError"):
                     terminal = evt.msg
-                # 代理护栏：Copilot 路径执行 NotUsePrts，正常永不出现；
-                # 一旦出现说明本局可能被游戏内代理污染（自抽号代理为异常数值，
-                # 无训练价值），如实记录以便事后剔除，不静默放过。
-                d = evt.details if isinstance(evt.details, dict) else {}
-                det = d.get("details") if isinstance(d.get("details"), dict) else {}
-                t = str(d.get("task") or det.get("task") or d.get("cur_task") or "")
-                if t:
-                    tail = t.rsplit("@", 1)[-1]
-                    if tail in PRTS_TASKS and tail not in prts_seen:
-                        prts_seen.append(tail)
+                scan_prts(evt, after=False)
 
         while self._driver.running() and terminal is None:
             fresh, cursor = self._driver.events_since(cursor)
@@ -373,9 +478,13 @@ class ReplayController:
         result_files.append(rel)
         settled = wait_settle(self._driver, timeout_s=_SETTLE_TIMEOUT_S)
         logger.stop()
+        # D9 接线（2026-10-10）：黑帧已由 state_logger 丢弃，snap 会返回
+        # "BLACK_DROPPED:<n>" 标记；结果帧列表里不能混入这种标记。
+        result_files = [r for r in result_files if not is_dropped_shot(r)]
         fresh, cursor = self._driver.events_since(cursor)
         for evt in fresh:
             rec(evt.msg, details=evt.details)
+            scan_prts(evt, after=True)
         print(
             f"[job {job_id}] 结算推进 settled={settled} snaps={len(result_files)}",
             flush=True,
@@ -405,19 +514,32 @@ class ReplayController:
             # 痕迹（自抽号代理是号商机械刷出的异常数值，无训练价值）——
             # 下游按此字段剔除即可，不必重跑或人工翻日志。
             "prts_detected": prts_seen,
+            # 战后阶段单独记账（护栏整局覆盖后的新增维度）
+            "prts_detected_after_battle": prts_after,
             "shot_files": None,
             "duration_ms": int((time.time() - t0) * 1000),
             "copilot_actions": seen_actions,
             "settled_back_to_briefing": settled,
+            # D9：本局丢弃的黑帧数（黑帧=过场/转场伪影，不落盘只计数）
+            "shots_dropped_black": logger.shots_dropped_black,
         }
         ep_path = self._writer.write_episode(run_dir, episode)
+        if terminal != "TaskChainCompleted":
+            summary.update(
+                error=(
+                    f"copilot 链失败 terminal={terminal}; "
+                    + ("; ".join(failures[-3:]) or "无 SubTaskError 记录")
+                )
+            )
         summary.update(
             ok=terminal == "TaskChainCompleted",
             episode=str(ep_path),
             copilot_actions=seen_actions,
             battle_states=state_summary["n"],
             prts_detected=prts_seen,
+            prts_detected_after_battle=prts_after,
             settled=settled,
+            shots_dropped_black=logger.shots_dropped_black,
         )
         print(
             f"[job {job_id}] episode -> {ep_path}  "
@@ -479,7 +601,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--instance",
-        default=str(root / "configs" / "instances" / "mumu_local.yaml"),
+        default=str(root / "configs" / "instances" / "mumu_local_patched.yaml"),
         help="实例定义",
     )
     parser.add_argument(
@@ -492,6 +614,13 @@ def main() -> int:
         "--skip-done", action="store_true", help="跳过已有 episode 目录的作业"
     )
     args = parser.parse_args()
+
+    # Windows 控制台默认 GBK：日志里的对钩/叉号会抛 UnicodeEncodeError 并终止整批
+    # （2026-10-10 实测：H5-1 导航成功后死在 print 上，零 episode 落盘）。
+    # 把编码错误降级为替换字符，保证批量不因日志字符中断。
+    for _stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(AttributeError, ValueError):
+            _stream.reconfigure(errors="replace")
 
     controller = ReplayController(args.instance, args.nav, args.work)
     only = set(args.only.split(",")) if args.only else None

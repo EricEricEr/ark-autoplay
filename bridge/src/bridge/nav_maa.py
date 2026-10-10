@@ -96,9 +96,13 @@ class CopilotRunner:
         self._drv = driver
         self._timeout = timeout_s
 
-    def run_job(self, job_path: str, formation: bool = True) -> CopilotResult:
+    def run_job(
+        self, job_path: str, formation: bool = True, support_unit_usage: int = 0
+    ) -> CopilotResult:
         """下发并执行一个 Copilot 作业文件，阻塞至终态或超时。"""
-        tid = self._drv.append_copilot(job_path, formation=formation)
+        tid = self._drv.append_copilot(
+            job_path, formation=formation, support_unit_usage=support_unit_usage
+        )
         if not tid:
             raise NavigationError(f"append_copilot 返回 0（参数被拒）: {job_path}")
 
@@ -260,14 +264,58 @@ def wait_settle(driver: MaaDriver, timeout_s: float = 300.0) -> bool:
             return False
         if not driver.start():
             return False
+    def _terminal(evts: list[Any]) -> bool | None:
+        # 按 taskid 过滤，避免上一链（如 Copilot）的终态落进本链窗口造成跨链误判；
+        # 再「先扫 Completed、后扫 Stopped/Error」，同一批里以 Completed 优先。
+        def _mine(evt: Any) -> bool:
+            d = evt.details if isinstance(evt.details, dict) else {}
+            t = d.get("taskid")
+            return t is None or str(t) == str(tid)
+
+        completed = False
+        halted = False
+        for evt in evts:
+            # AllTasksCompleted 表示队列已空；用 finished_tasks/taskid 确认本链在其中，
+            # 避免上一链的 AllTasksCompleted 落进本窗被误判 True（两者都缺则放行）。
+            if evt.msg == "AllTasksCompleted":
+                dd = evt.details if isinstance(evt.details, dict) else {}
+                fin = dd.get("finished_tasks")
+                has_id = dd.get("taskid") is not None or fin is not None
+                mine_fin = isinstance(fin, list) and any(
+                    str(x) == str(tid) for x in fin
+                )
+                if not has_id or str(dd.get("taskid")) == str(tid) or mine_fin:
+                    completed = True
+                continue
+            if not _mine(evt):
+                continue
+            if evt.msg == "TaskChainCompleted":
+                completed = True
+            elif evt.msg in ("TaskChainError", "TaskChainStopped"):
+                halted = True
+        if completed:
+            return True
+        if halted:
+            return False
+        return None
+
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         evts, mark = driver.events_since(mark)
-        for evt in evts:
-            if evt.msg in ("TaskChainCompleted", "AllTasksCompleted"):
+        verdict = _terminal(evts)
+        if verdict is not None:
+            if verdict:
                 wait_idle(driver, timeout_s=20.0)
-                return True
-            if evt.msg == "TaskChainError":
-                return False
+            return verdict
+        if not driver.running():
+            # 驱动已停：终态事件**可能晚于** running() 变 False 才到（实测教训），
+            # 故再排空一次缓冲，而不是立刻判失败、也不要空等满 300s。
+            time.sleep(0.5)
+            evts, mark = driver.events_since(mark)
+            verdict = _terminal(evts)
+            if verdict:
+                wait_idle(driver, timeout_s=20.0)
+            # TaskChainStopped / Error / 无终态：收尾未确认，快速返回 False
+            return verdict if verdict is not None else False
         time.sleep(0.2)
     return False

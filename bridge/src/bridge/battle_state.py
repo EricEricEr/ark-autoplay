@@ -116,6 +116,12 @@ def summarize_states(records: list[dict[str, Any]]) -> dict[str, Any]:
 
     返回：条数、费用/击杀的取值范围、待部署栏规模、覆盖的时间跨度。
     空列表时返回 ``{"n": 0}``——**不伪造 0 值**，让"没采到"与"采到 0"可区分。
+
+    has_costs / has_kills 语义（D10，2026-10-10）：只在**观测到非零值**时为 True。
+    此前是"字段存在即 True"，而上游 MaaCore 的 costs/kills 实测恒为 0（其源码自注
+    击杀/费用识别常不准），导致这两个字段永远为 True、完全失去指示作用。
+    与"没采到"仍可区分：无字段 → False；有字段但全 0 → 同样 False，
+    但 costs_range/kills_range 会如常给出 [0, 0]（= 采到了，值确实是 0）。
     """
     if not records:
         return {"n": 0}
@@ -126,8 +132,9 @@ def summarize_states(records: list[dict[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "n": len(records),
         "protocol_version": STATE_PROTOCOL_VERSION,
-        "has_costs": bool(costs),
-        "has_kills": bool(kills),
+        # 观测到非零值才 True（字段存在≠有有效值；上游实测恒 0，见 docstring）
+        "has_costs": any(c != 0 for c in costs),
+        "has_kills": any(k != 0 for k in kills),
         "hand_size_max": max(hand_sizes) if hand_sizes else 0,
     }
     if costs:

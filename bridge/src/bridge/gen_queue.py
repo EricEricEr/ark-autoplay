@@ -93,6 +93,7 @@ def build_queue(
     operbox_path: Path | None = None,
     max_missing: int | None = None,
     require_fight: bool = False,
+    require_req: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """构建队列，返回 ``(entries, stats)``。
 
@@ -111,6 +112,7 @@ def build_queue(
 
     # 账号拥有的干员名（用于可达过滤）
     owned: set[str] = set()
+    owned_map: dict[str, dict[str, Any]] = {}
     if operbox_path and operbox_path.is_file():
         ob = json.loads(operbox_path.read_text(encoding="utf-8"))
         owned = {
@@ -118,6 +120,10 @@ def build_queue(
             for o in (ob.get("own_opers") or [])
             if o.get("name")
         }
+        # --require-req 用：干员名 -> (elite, level, skill_level)；skill 缺数据记 None
+        for o in (ob.get("own_opers") or []):
+            if o.get("name"):
+                owned_map[str(o.get("name"))] = o
         if max_missing is None:
             max_missing = 1  # 默认允许 1 个助战
 
@@ -174,6 +180,32 @@ def build_queue(
                     cnt["too_many_missing"] += 1
                     continue
                 cnt["reachable"] += 1
+                if require_req:
+                    bad = 0
+                    for sl in (rec.get("lineup") or []):
+                        nm = str(sl.get("name") or "")
+                        o = owned_map.get(nm)
+                        if not o:
+                            continue  # 缺员算 max_missing，不在此计
+                        rq = sl.get("req") or {}
+                        re_ = rq.get("elite") or 0
+                        rl = rq.get("level") or 0
+                        rsk = rq.get("skill_level") or 0
+                        if o.get("elite") is not None and (o.get("elite") or 0) < re_:
+                            bad += 1
+                            continue
+                        if (
+                            (o.get("elite") or 0) == re_
+                            and (o.get("level") or 0) < rl
+                        ):
+                            bad += 1
+                            continue
+                        sk = o.get("skill_level")
+                        if sk is not None and rsk and sk < rsk:
+                            bad += 1
+                    if bad:
+                        cnt["req_insufficient"] += 1
+                        continue
             rec["stage_code"] = code
             rec["stage_type"] = str(st.get("type"))
             per_stage_map[sid].append(rec)
@@ -270,6 +302,11 @@ def main(argv: list[str] | None = None) -> int:
         help="允许缺几名干员（默认 1 = 可借 1 个助战；0 = 必须全靠自己）",
     )
     ap.add_argument(
+        "--require-req",
+        action="store_true",
+        help="要求账号干员满足 lineup.req 的精级/等级/技能（skill_level 1-7/8-10 口径；缺数据的 skill 不判）",
+    )
+    ap.add_argument(
         "--require-fight",
         action="store_true",
         help="只收 Fight 可接受的关卡（主线/高难/支线）。"
@@ -290,6 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         operbox_path=Path(args.operbox) if args.operbox else None,
         max_missing=args.max_missing,
         require_fight=args.require_fight,
+        require_req=args.require_req,
     )
     doc = {
         "note": (

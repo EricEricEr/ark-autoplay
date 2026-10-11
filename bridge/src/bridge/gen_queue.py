@@ -179,6 +179,13 @@ def build_queue(
                 if miss > max_missing:
                     cnt["too_many_missing"] += 1
                     continue
+                own_ct = len(names) - miss
+                if names and own_ct == 0:
+                    # 整队全是缺的且阵容非空——即便 max_missing>=1 也无法开局（游戏要求主队 >=1 名自有干员）。
+                    # 数据里存在"全队只有助战 1 人"的作业（例：job-37809 / 1-1 孤岛），实测 TaskChainError。
+                    # 空编队（0 名作业，例 0-1）是合法回放，不受此限。
+                    cnt["no_own_ops"] += 1
+                    continue
                 cnt["reachable"] += 1
                 if require_req:
                     bad = 0

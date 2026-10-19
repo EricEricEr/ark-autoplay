@@ -42,6 +42,8 @@ docs/              # rfc/（协议）、adr/（决策记录）、评测报告
 | `$env:ARK_ML_ROOT="<数据根>"` | 训练管线所有输入/输出路径的根（机器路径不入库） |
 | `uv run python -m ark_core.training.run build` | 构建模仿学习数据集（episodes → npz） |
 | `uv run python -m ark_core.training.run train` | 训练 track_a（配置见 `configs/imitation_v0.yaml`） |
+| `uv run python -m ark_core.training.run_v1 build` | 构建 **v1** 数据集（真机 battle_states ↔ 作业动作对 → npz，配置见 `configs/imitation_v1.yaml`） |
+| `uv run python -m ark_core.training.run_v1 train` | 训练 v1（状态注入版 track_a；指标含 macro-F1 与同口径常数基线，链路冒烟不作能力证据） |
 
 torch 缺失时 `tests/unit/test_imitation.py` 自动 skip，故未装 train 组也能跑全部门禁。
 训练任务定义、指标口径与**能力边界**见 `docs/adr/0005-imitation-v0.md`（v0 无战场状态，

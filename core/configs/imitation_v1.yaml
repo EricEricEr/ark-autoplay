@@ -1,0 +1,72 @@
+# 状态-动作行为克隆 v1 实验配置（带战场状态，链路冒烟）
+#
+# 任务：P(a_t | 关卡静态特征, 编队, a_<t, state_t)  —— state_t 为第 t 个动作**之前**
+#       的战场快照（battle_states.jsonl 逐动作对齐），见
+#       src/ark_core/training/state_action_data.py 的模块 docstring（配对规则、
+#       state_feat 12 维定义）与 src/ark_core/models/track_a/policy_v1.py（对齐语义）。
+#
+# 诚实口径：真机数据 ~1k 状态-动作对（2026-10-19 实测 151 局 / 5 类动作），
+#       本实验只验证「(battle_state, action) 数据 → 模型 → 指标」链路可走通，
+#       **不作能力证据**。数据只有 main / camp 两族，家族级留出会砍掉大半数据，
+#       故降级为**关卡级留出**（holdout_stages）；同章关卡泄漏风险如实保留。
+#
+# 路径解析（红线：机器路径不入库）——同 imitation_v0.yaml：
+#   所有路径以 ${ARK_ML_ROOT} 为根展开。真机 episodes 在数据根**隔壁**的
+#   ark-data/（只读，数据工厂正在写），故用 ${ARK_ML_ROOT}/../ark-data 相对定位。
+#   PowerShell:  $env:ARK_ML_ROOT = "E:\path\to\your\workdir（data-validation）"
+# 目录约定：
+#   <root>/processed/                     datapipe 产物（stagefeat / featvec parquet）
+#   <root>/processed/state_action_v1.npz  本管线构建的数据集
+#   <root>/runs/imitation_v1/             训练输出（checkpoint / build_report / train_report）
+
+experiment:
+  name: imitation_v1
+  seed: 42
+  device: cuda
+
+data:
+  root: "${ARK_ML_ROOT}"
+  processed_dir: "${ARK_ML_ROOT}/processed"
+  episodes_root: "${ARK_ML_ROOT}/../ark-data/episodes"   # 真机 episodes（只读）
+  dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v1.npz"
+  vocab_top_k: 256
+  limit: null            # 调试用：只取前 N 局（null = 全量）
+
+  # 关卡级留出：数据量 ≥3 局的中后期关卡。
+  # 下列选择来自 2026-10-19 全量扫描（其计数由 build 侧复核并写进 build_report，
+  # 若与实扫不符 build 直接报错退出）：main_04-01(6) main_01-12(5)
+  # main_02-02(4) main_02-03(3)，合计 18 局。
+  # 置空 [] 时按确定性规则自动选取（字典序降序 + 局数门槛，不许随机）。
+  holdout_stages:
+    - main_04-01
+    - main_01-12
+    - main_02-02
+    - main_02-03
+  holdout_min_eps: 3     # holdout 关卡的有效局数下限（复核 + 自动选取共用）
+  holdout_auto_n: 4      # holdout_stages 为空时自动选取的关卡数
+
+model:
+  hidden_dim: 256
+  num_layers: 4
+  num_dec_layers: 2
+  num_heads: 8
+  dropout: 0.1
+
+training:
+  stage: imitate_v1
+  epochs: 20
+  batch_size: 16
+  lr: 3.0e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_train_batches: 64   # train 档评测抽样（holdout 恒全量）
+  # 损失权重：cell/dir 只在 deploy 上计算（沿用 v0 imitate.compute_loss）
+  w_type: 1.0
+  w_target: 1.0
+  w_cell: 1.0
+  w_dir: 0.5
+
+evaluation:
+  runs_dir: "${ARK_ML_ROOT}/runs"
+  # 对外只报 holdout；train 档仅用于诊断过拟合
+  report_tiers: [holdout]

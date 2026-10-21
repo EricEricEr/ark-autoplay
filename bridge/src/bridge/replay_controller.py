@@ -548,6 +548,9 @@ class ReplayController:
                 chain_completed=(terminal == "TaskChainCompleted"),
                 settled=settled,
             ),
+            # 失败阶段摘要（可选字段，bridge 自有；与 battle_result 正交）：
+            # nav|formation|start|battle|done，推导见 classify_fail_stage。
+            "fail_stage": classify_fail_stage(terminal, failures),
             # 战场状态（需 patched MaaCore）：无记录时为 None 且不落文件
             "battle_states_file": states_path.name if states_path else None,
             "battle_states": state_summary,
@@ -582,6 +585,7 @@ class ReplayController:
             settled=settled,
             shots_dropped_black=logger.shots_dropped_black,
             battle_result=episode["battle_result"],
+            fail_stage=episode["fail_stage"],
             blockers_dismissed=len(sentry.events()),
         )
         print(
@@ -626,9 +630,46 @@ class ReplayController:
     def _has_episode(self, entry: dict[str, Any]) -> bool:
         ep_dir = self._work / "episodes" / entry["source"]["stage_id_raw"]
         marker = f"job-{entry['source']['job_id']}-"
-        return ep_dir.is_dir() and any(
-            p.name.startswith(marker) for p in ep_dir.iterdir()
-        )
+        return has_completed_episode(ep_dir, marker)
+
+def classify_fail_stage(terminal: str | None, failures: list[str]) -> str:
+    """推导 episode 的 ``fail_stage`` 字段（nav|formation|start|battle|done）。
+
+    口径（2026-10-21 拍板，与 RCA 报表同源）：
+
+    - 任务链正常收尾 → ``"done"``（流程走完；胜负由 ``battle_result`` 承担，
+      两字段正交——``lost+done``、``lost+battle`` 都合法）；
+    - 编队被拒（``BattleFormationTask``，如 OperatorMissing）→ ``"formation"``；
+    - 进战斗前序失败（``BattleStartPre``/``BattleStartAll``）→ ``"start"``；
+    - 其余（作战中链错误/超时/无失败子任务留痕）→ ``"battle"``。
+
+    ``"nav"`` 预留在枚举内：当前导航失败会在写 episode 之前提前返回，
+    不产生 episode.json，故线上暂时不会出现该值。
+    """
+    if terminal == "TaskChainCompleted":
+        return "done"
+    tags = ";".join(failures)
+    if "BattleFormationTask" in tags:
+        return "formation"
+    if "BattleStartPre" in tags or "BattleStartAll" in tags:
+        return "start"
+    return "battle"
+
+
+def has_completed_episode(ep_dir: str | Path, marker: str) -> bool:
+    """断点续跑判定：``ep_dir`` 下存在带 ``episode.json`` 的 ``marker*`` 目录。
+
+    杀进程会留下只有 ``shots/`` 的半成品目录——按"目录存在即完成"的旧口径
+    这类局会被永久跳过且永不可见。收紧为以 ``episode.json`` 为准
+    （它是 _run_one 最后写出的文件，存在即代表本局流程走完）。
+    """
+    ep_dir = Path(ep_dir)
+    return ep_dir.is_dir() and any(
+        p.is_dir()
+        and p.name.startswith(marker)
+        and (p / "episode.json").is_file()
+        for p in ep_dir.iterdir()
+    )
 
 
 def _repo_root() -> Path:

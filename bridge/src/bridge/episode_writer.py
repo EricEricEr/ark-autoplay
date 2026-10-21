@@ -20,6 +20,11 @@ bundle 结构与 ``data-validation/capture_episode.py`` 已验证格式一致：
   ``blocker_watchdog.resolve_battle_result``——结算段检出判负屏为 lost，
   链路完成且收尾成功为 win，其余 unknown）。方案 §10「只留通关局」的下游
   过滤口径 = ``battle_result == "win"``；旧 bundle 无此字段一律按 unknown 处理；
+- ``fail_stage``（**可选**，2026-10-21）：失败阶段摘要
+  ``"nav" / "formation" / "start" / "battle" / "done"``（推导规则见
+  ``replay_controller.classify_fail_stage``）。``"done"`` 只表示重放流程走完，
+  **与 battle_result 正交**：``lost+done``（打完但战败）与 ``lost+battle``
+  （未进结算的战斗失败）都合法。无此字段 = 老局（2026-10-21 前）；
 - ``action_events.jsonl``：回调事件流 + 截图标记（相对毫秒时间戳）；
 - ``shots/``：节拍帧 + 动作触发帧 + 结算帧（**本机留存**，
   入仓内容仅限 sha256 清单——素材红线 §3.2/§6.3）。
@@ -132,6 +137,18 @@ class EpisodeWriter:
         ):
             raise ValueError(
                 f"battle_result 必须是 win/lost/unknown，收到 {battle_result!r}"
+            )
+        fail_stage = episode.get("fail_stage")
+        if fail_stage is not None and fail_stage not in (
+            "nav",
+            "formation",
+            "start",
+            "battle",
+            "done",
+        ):
+            raise ValueError(
+                "fail_stage 必须是 nav/formation/start/battle/done，"
+                f"收到 {fail_stage!r}"
             )
         blockers = episode.get("blockers_dismissed")
         if blockers is not None:

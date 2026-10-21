@@ -92,6 +92,95 @@ def load_instance_config(path: str | Path) -> dict[str, Any]:
     return cfg
 
 
+def resolve_narrow_path(path: str | Path) -> str:
+    """把目录路径收敛为可安全传给窄字符（ANSI 语义）C API 的形态。
+
+    背景（2026-10-21 字节级实锤）：当前部署的 patched MaaCore.dll 对
+    ``AsstSetUserDir`` 传入的窄字符串按 **系统 ANSI(GBK)** 解释建目录——
+    asst.py 官方约定传 UTF-8 字节，DLL 却按 ANSI 落盘，
+    ``<work>/debug/maa_user`` 里的中文/全角问号被写成乱码树
+    （乱码名按 GBK 编码回去恰为原路径的 UTF-8 字节）。
+
+    修复策略：让传给 DLL 的路径**不含非 ASCII**，按序尝试——
+
+    1. 已是 ASCII：原样返回（零开销）；
+    2. Windows 8.3 短名（同目录的 ASCII 别名；**本机已禁用 8.3，实测走不到**）；
+    3. **Junction 别名**（实测可用）：在系统临时目录建
+       ``arkmaa_<sha1[:10]>`` 目录联接指向目标，返回 ASCII 别名——
+       落盘字节经由 NTFS 重解析点写进真实 CJK 目录（"落回正确的 ark-data 下"）。
+       联接由 ``mklink /J`` 创建（普通用户权限即可，非 symlink，免提权）；
+       已存在且指向一致则复用。临时目录被系统清理不影响发源地数据，
+       下次进程启动自动重建。
+
+    都失败（路径不存在/非 Windows/联接创建被拒）则抛 ``RuntimeError``——
+    好过静默把日志写进乱码树。
+
+    ⚠️ 为什么不能"显式按 ANSI 编码路径"：asst.py 在 ``Asst.load`` 内部固定
+    ``.encode("utf-8")``，字节级控制点在它手里；而"双重乱码"（GBK 字节
+    伪装成 UTF-8 字符串）只在特定字节序列上成立，不是通用解。
+    """
+    p = str(Path(path).resolve())
+    if p.isascii():
+        return p
+    if not Path(p).exists():
+        raise RuntimeError(f"路径不存在，无法收敛为窄字符安全形态: {p!r}")
+    short = _win32_short_name(p)
+    if short and short.isascii() and Path(short).exists():
+        return short
+    return _junction_alias(p)
+
+
+def _junction_alias(p: str) -> str:
+    """为非 ASCII 路径 ``p`` 建/复用系统临时目录下的 ASCII Junction 别名。"""
+    import hashlib  # noqa: PLC0415  # 仅乱码救场路径用
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    digest = hashlib.sha1(p.encode("utf-8")).hexdigest()[:10]
+    alias = Path(tempfile.gettempdir()) / f"arkmaa_{digest}"
+    if alias.exists():
+        same_target = os.path.realpath(alias) == os.path.realpath(p)
+        if os.path.isjunction(alias) and same_target:
+            return str(alias)
+        # 指向变了/不是我们建的联接：先撤后建；普通目录绝不动
+        if os.path.isjunction(alias):
+            subprocess.run(
+                ["cmd", "/c", "rmdir", str(alias)], capture_output=True, check=False
+            )
+        if alias.exists():
+            raise RuntimeError(
+                f"Junction 别名被非联接目录占用，拒绝覆盖: {alias}"
+            )
+    try:
+        r = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(alias), p],
+            capture_output=True,
+            check=False,
+        )
+        ok = r.returncode == 0
+    except OSError:  # 非 Windows 无 cmd
+        ok = False
+    if not ok or not alias.exists():
+        raise RuntimeError(
+            f"创建 Junction 别名失败 rc={r.returncode}: {alias} -> {p}。"
+            "请将数据落盘根迁到纯 ASCII 路径后重试。"
+        )
+    return str(alias)
+
+
+def _win32_short_name(path: str) -> str | None:
+    """GetShortPathNameW 包装；非 Windows / 路径不存在 / 未启用 8.3 时返回 None。"""
+    if os.name != "nt":
+        return None
+    import ctypes  # noqa: PLC0415  # 惰性导入：仅 Windows 窄路径救场时用
+
+    buf = ctypes.create_unicode_buffer(32768)
+    n = ctypes.windll.kernel32.GetShortPathNameW(path, buf, len(buf))
+    if n == 0 or n >= len(buf):
+        return None
+    return buf.value
+
+
 def _load_asst(maa_dir: str, user_dir: str) -> dict[str, Any]:
     """惰性加载 asst 接口；进程内只加载一次，重复调用直接复用。"""
     if _ASST_CTX:
@@ -106,7 +195,16 @@ def _load_asst(maa_dir: str, user_dir: str) -> dict[str, Any]:
     from asst.utils import Message  # noqa: PLC0415
 
     Path(user_dir).mkdir(parents=True, exist_ok=True)
-    if not Asst.load(path=maa_dir, user_dir=user_dir):
+    # 传给 DLL 窄字符 API 的路径必须 ASCII 安全（见 resolve_narrow_path 的
+    # 乱码事故说明）；maa_dir 本身是 ASCII 时为零开销。
+    maa_dir_narrow = resolve_narrow_path(maa_dir)
+    user_dir_narrow = resolve_narrow_path(user_dir)
+    if user_dir_narrow != str(Path(user_dir).resolve()):
+        print(
+            f"[maa] user_dir 按 8.3 短名传给 DLL: {user_dir} -> {user_dir_narrow}",
+            flush=True,
+        )
+    if not Asst.load(path=maa_dir_narrow, user_dir=user_dir_narrow):
         raise RuntimeError(f"Asst.load 失败: {maa_dir}")
     _ASST_CTX.update({"Asst": Asst, "Message": Message, "maa_dir": maa_dir})
     return _ASST_CTX

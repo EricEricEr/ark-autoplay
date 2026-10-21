@@ -124,6 +124,37 @@ def test_validate_shots_dropped_black_is_optional_nonneg_int(tmp_path: Path) -> 
             writer.write_episode(run_dir, ep_bad)
 
 
+def test_validate_fail_stage_enum_and_orthogonality(tmp_path: Path) -> None:
+    """fail_stage：限枚举；与 battle_result 正交（lost+done / lost+battle 均合法）。"""
+    writer = EpisodeWriter(tmp_path)
+    run_dir = writer.begin("main_00-01", 1)
+    (run_dir / "shots" / "001_tick.png").write_bytes(b"\x89PNG-a")
+
+    for combo in (
+        ("lost", "done"),  # 打完但战败
+        ("lost", "battle"),  # 未进结算的战斗失败
+        ("win", "done"),
+        ("unknown", "battle"),
+        ("unknown", "formation"),
+    ):
+        ep = _fake_episode()
+        ep["battle_result"], ep["fail_stage"] = combo
+        writer.write_episode(run_dir, ep)  # 不抛即通过
+
+    for bad in ("victory", "nav_failed", 3):
+        ep_bad = _fake_episode()
+        ep_bad["fail_stage"] = bad
+        with pytest.raises(ValueError):
+            writer.write_episode(run_dir, ep_bad)
+
+    # 无字段 = 老局，合法
+    ep_absent = _fake_episode()
+    saved = json.loads(
+        writer.write_episode(run_dir, ep_absent).read_text(encoding="utf-8")
+    )
+    assert "fail_stage" not in saved
+
+
 def test_validate_battle_result_and_blockers(tmp_path: Path) -> None:
     """新字段：battle_result 限枚举；blockers_dismissed 限 [{kind,t_ms,n}] 形态。"""
     writer = EpisodeWriter(tmp_path)

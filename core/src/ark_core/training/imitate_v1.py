@@ -330,11 +330,13 @@ def train(
     device_str: str = "cuda",
     log: Any = print,
     ckpt_name: str = "track_a_v1.pt",
+    resume_from: Path | None = None,
 ) -> dict[str, Any]:
     """训练主循环；按关卡切成 train / holdout 两档，输出常数基线并排对照。
 
     ``ckpt_name``：checkpoint 文件名（默认 track_a_v1.pt 保持 v1 产物路径不变；
     v2 实验经配置显式给 track_a_v2.pt，避免产物混淆）。
+    ``resume_from``：增量续训的旧 checkpoint 路径（strict 加载，词表/维度不符即报错）。
     """
     set_seed(cfg.seed)
     records, featvec, vocab_tokens, state_dim = load_records_v1(npz_path)
@@ -384,6 +386,12 @@ def train(
         f"[model] 参数量 {n_params/1e6:.2f}M  vocab={vocab.size}  "
         f"state_dim={state_dim}  device={device}"
     )
+    if resume_from is not None:
+        # 续训：加载旧权重，优化器/调度器重新起步（strict=True，形状不符直接报错）
+        blob = torch.load(resume_from, map_location=device, weights_only=False)
+        state_dict = blob.get("state_dict", blob) if isinstance(blob, dict) else blob
+        model.load_state_dict(state_dict, strict=True)
+        log(f"[model] 已加载旧权重续训: {resume_from}")
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     total_steps = max(1, len(train_batches) * cfg.epochs)

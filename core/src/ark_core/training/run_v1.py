@@ -1,19 +1,26 @@
-"""状态-动作行为克隆 v1/v2 CLI：构建数据集 / 训练 / 评测。
+"""状态-动作行为克隆 v1/v2/v3 CLI：构建数据集 / 训练 / K 折 / DIR 审计。
 
 用法::
 
     python -m ark_core.training.run_v1 build   --config configs/imitation_v1.yaml
     python -m ark_core.training.run_v1 train   --config configs/imitation_v1.yaml
     python -m ark_core.training.run_v1 all     --config configs/imitation_v2.yaml
+    python -m ark_core.training.run_v1 kfold   --config configs/imitation_v3_kfold.yaml
+    python -m ark_core.training.run_v1 audit_dir --config configs/imitation_v3_kfold.yaml
+    python -m ark_core.training.run_v1 all     --config configs/imitation_v2.yaml \
+        --increment-from ${ARK_ML_ROOT}/runs/imitation_v2
 
-与 v0 ``run`` 的差异：数据源是真机 episodes 目录树（非 episodes_v0.jsonl），
-留出为**关卡级**（``holdout_stages``），空列表时按确定性规则自动选取
-（见 ``state_action_data.choose_holdout_stages``，结果写入 build_report）。
-v2 增加胜负口径清洗：配置给 ``data.exclude_by_result`` / ``data.exclude_scan_file``
-时按双侧并集剔除判负/阻断局（详见 state_action_data 模块 docstring 的清洗小节，
-排除明细写入 build_report 的 ``excluded``）；不配则完全等同 v1 行为。
-配置见 ``configs/imitation_v1.yaml`` / ``configs/imitation_v2.yaml``（一切超参入
-配置，禁止代码内魔法数字）。
+step 一览：
+- ``build/train/all``：v1/v2 口径构建与训练；v2 加胜负口径清洗
+  （``data.exclude_by_result`` / ``data.exclude_scan_file``，明细入 build_report
+  的 ``excluded``；不配则完全等同 v1 行为）；
+- ``kfold``：K 折关卡轮换留出，均值±std 汇总（v3 评测口径硬化，见 ``kfold`` 模块）；
+- ``audit_dir``：DIR 朝向标签四项纯数据审计（见 ``dir_label_audit`` 模块）；
+- ``--increment-from``：增量续训钩子——build 只编码旧 run 未见过的新局
+  （词表/featvec 冻结，见 ``state_action_data.build_dataset_delta``），train 加载
+  旧 run 的 checkpoint 继续训（``training.resume_from_ckpt`` 可显式覆盖权重来源）。
+
+配置见 ``configs/imitation_v*.yaml``（一切超参入配置，禁止代码内魔法数字）。
 """
 
 from __future__ import annotations
@@ -83,9 +90,35 @@ def _collect_exclusion_from_cfg(
     return excl
 
 
-def _do_build(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
-    """构建 v1/v2 数据集（词表只从训练侧建；build_report 落盘）。"""
-    from .state_action_data import build_dataset, scan_stage_counts
+def _valid_dir_names(episodes_root: Path) -> list[str]:
+    """有效局目录名全量列表（写入 build_report 供增量集差/审计参考）。"""
+    from .state_action_data import iter_episode_dirs
+
+    return sorted(ep_dir.name for _stage, ep_dir in iter_episode_dirs(episodes_root, None))
+
+
+def _excluded_dir_names(episodes_root: Path, exclusion: Any) -> list[str]:
+    """清洗并集 ∩ 有效局 的目录名列表（exclusion=None 时空表）。"""
+    if exclusion is None:
+        return []
+    union = exclusion.union()
+    return [n for n in _valid_dir_names(episodes_root) if n in union]
+
+
+def _do_build(
+    cfg: dict[str, Any], log: Any = print, increment_from: Path | None = None
+) -> dict[str, Any]:
+    """构建 v1/v2 数据集（词表只从训练侧建；build_report 落盘）。
+
+    ``increment_from``：增量模式。指向旧 run 目录（含 build_report.json 与
+    dataset_npz），本次只编码其未见过的新局，词表/featvec 冻结（详见
+    :func:`ark_core.training.state_action_data.build_dataset_delta` 的不变式）。
+    """
+    from .state_action_data import (
+        build_dataset,
+        build_dataset_delta,
+        scan_stage_counts,
+    )
 
     d = cfg["data"]
     processed = _expand(d["processed_dir"])
@@ -100,15 +133,41 @@ def _do_build(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
         f"{ {s: counts.get(s, 0) for s in holdout} }）")
     exclusion = _collect_exclusion_from_cfg(d, episodes_root, log)
 
-    vocab, stats, n = build_dataset(
-        processed_dir=processed,
-        episodes_root=episodes_root,
-        out_path=out,
-        holdout_stages=set(holdout),
-        limit=d.get("limit"),
-        vocab_top_k=int(d.get("vocab_top_k", 256)),
-        exclusion=exclusion,
-    )
+    delta: dict[str, Any] | None = None
+    if increment_from is not None:
+        base_report_path = increment_from / "build_report.json"
+        if not base_report_path.is_file():
+            raise SystemExit(f"--increment-from 目录缺 build_report.json: {increment_from}")
+        with base_report_path.open("r", encoding="utf-8") as f:
+            base_report = json.load(f)
+        base_npz_raw = base_report.get("dataset_npz")
+        if not base_npz_raw:
+            raise SystemExit(f"{base_report_path} 无 dataset_npz 字段，无法做增量基底")
+        base_npz = Path(str(base_npz_raw))
+        if not base_npz.is_file():
+            raise SystemExit(f"增量基底 npz 不存在: {base_npz}")
+        log(f"[build] 增量模式：基底 {base_npz}")
+        vocab, stats, delta = build_dataset_delta(
+            processed_dir=processed,
+            episodes_root=episodes_root,
+            base_npz=base_npz,
+            out_path=out,
+            holdout_stages=set(holdout),
+            limit=d.get("limit"),
+            vocab_top_k=int(d.get("vocab_top_k", 256)),
+            exclusion=exclusion,
+        )
+        n = int(delta["total_records"])
+    else:
+        vocab, stats, n = build_dataset(
+            processed_dir=processed,
+            episodes_root=episodes_root,
+            out_path=out,
+            holdout_stages=set(holdout),
+            limit=d.get("limit"),
+            vocab_top_k=int(d.get("vocab_top_k", 256)),
+            exclusion=exclusion,
+        )
     rep = {
         "n_records": n,
         "vocab_size": vocab.size,
@@ -159,9 +218,20 @@ def _do_build(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
         "holdout_stage_counts": {s: counts.get(s, 0) for s in holdout},
         "stage_counts": counts,
         "dataset_npz": str(out),
+        "incremental": delta,
+        # 供 --increment-from 集差/审计参考：有效局目录名全量 + 清洗实际命中的交集
+        "episode_dirs_valid_seen": _valid_dir_names(episodes_root),
+        "episode_dirs_excluded_applied": _excluded_dir_names(
+            episodes_root, exclusion
+        ),
     }
     log(f"[build] 保留 {n} 局（扫描 {stats.n_seen}）→ {out}  "
         f"词表 {vocab.size}  ({rep['elapsed_s']}s)")
+    if delta is not None:
+        log(
+            f"[build] 增量：基底 {delta['n_base_records']} + 新增 {delta['n_new_records']}"
+            f"（跳过已见 {delta['n_seen_skipped']}；新局目录 {delta['new_episode_dirs']}）"
+        )
     log(f"[build] 丢弃明细: {rep['drop']}")
     log(f"[build] 异常明细: {rep['anomaly']}")
     log(
@@ -182,15 +252,13 @@ def _do_build(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
     return rep
 
 
-def _do_train(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
-    """训练（v1：状态注入模型 + 关卡留出 + 常数基线）。"""
+def _make_train_cfg(cfg: dict[str, Any]) -> Any:
+    """从实验配置组装 TrainConfig（train / kfold 共用同一处，避免两路漂移）。"""
     from .imitate import TrainConfig
-    from .imitate_v1 import train
 
-    d = cfg["data"]
     m = cfg.get("model", {})
     t = cfg.get("training", {})
-    tcfg = TrainConfig(
+    return TrainConfig(
         d_model=int(m.get("hidden_dim", 256)),
         n_heads=int(m.get("num_heads", 8)),
         n_layers=int(m.get("num_layers", 4)),
@@ -208,10 +276,44 @@ def _do_train(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
         w_dir=float(t.get("w_dir", 0.5)),
         eval_train_batches=int(t.get("eval_train_batches", 64)),
     )
+
+
+def _resolve_resume_ckpt(
+    cfg: dict[str, Any], increment_from: Path | None, log: Any
+) -> Path | None:
+    """续训权重路径：``training.resume_from_ckpt`` 优先；否则取 --increment-from run
+    目录里唯一的 *.pt（多个时报错，不猜）。"""
+    t = cfg.get("training", {})
+    explicit = t.get("resume_from_ckpt")
+    if explicit:
+        p = _expand(str(explicit))
+        if not p.is_file():
+            raise SystemExit(f"resume_from_ckpt 不存在: {p}")
+        return p
+    if increment_from is not None:
+        pts = sorted(increment_from.glob("*.pt"))
+        if not pts:
+            raise SystemExit(f"--increment-from 目录无 checkpoint: {increment_from}")
+        if len(pts) > 1:
+            raise SystemExit(f"{increment_from} 有多个 *.pt，请用 resume_from_ckpt 显式指定")
+        return pts[0]
+    return None
+
+
+def _do_train(
+    cfg: dict[str, Any], log: Any = print, increment_from: Path | None = None
+) -> dict[str, Any]:
+    """训练（v1：状态注入模型 + 关卡留出 + 常数基线；可增量续训）。"""
+    from .imitate_v1 import train
+
+    d = cfg["data"]
+    t = cfg.get("training", {})
+    tcfg = _make_train_cfg(cfg)
     out_dir = _expand(cfg["evaluation"]["runs_dir"]) / str(
         cfg.get("experiment", {}).get("name", "run")
     )
     holdout = {str(s) for s in (d.get("holdout_stages_resolved") or d.get("holdout_stages") or [])}
+    resume = _resolve_resume_ckpt(cfg, increment_from, log)
     result = train(
         _expand(d["dataset_npz"]),
         tcfg,
@@ -220,6 +322,7 @@ def _do_train(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
         device_str=str(cfg.get("experiment", {}).get("device", "cuda")),
         log=log,
         ckpt_name=str(t.get("ckpt_name", "track_a_v1.pt")),
+        resume_from=resume,
     )
     out_report = out_dir / "train_report.json"
     with out_report.open("w", encoding="utf-8") as f:
@@ -228,10 +331,70 @@ def _do_train(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
     return result
 
 
+def _do_kfold(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
+    """K 折关卡轮换留出（v3 评测口径硬化，见 ``kfold`` 模块 docstring）。"""
+    from .kfold import run_kfold
+
+    d = cfg["data"]
+    k_cfg = cfg.get("kfold", {})
+    k = int(k_cfg.get("k", 5))
+    seed = int(k_cfg.get("seed", cfg.get("experiment", {}).get("seed", 42)))
+    arms = k_cfg.get("arms") or [{"name": "full", "dir_loss": "full"}]
+    out_dir = _expand(cfg["evaluation"]["runs_dir"]) / str(
+        cfg.get("experiment", {}).get("name", "run")
+    )
+    result = run_kfold(
+        _expand(d["dataset_npz"]),
+        _make_train_cfg(cfg),
+        k=k,
+        seed=seed,
+        out_dir=out_dir,
+        device_str=str(cfg.get("experiment", {}).get("device", "cuda")),
+        arms=[dict(a) for a in arms],
+        w_dir_weighted=float(cfg.get("training", {}).get("dir_loss_weighted", 0.1)),
+        log=log,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_summary = out_dir / "metrics_summary.json"
+    with out_summary.open("w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    log(f"[kfold] metrics_summary → {out_summary}")
+    return result
+
+
+def _do_audit_dir(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
+    """DIR 标签审计（先审数据再谈模型，见 ``dir_label_audit`` 模块 docstring）。"""
+    from .dir_label_audit import audit_dir_labels
+
+    d = cfg["data"]
+    a_cfg = cfg.get("audit_dir", {})
+    episodes_root = _expand(d["episodes_root"])
+    exclusion = _collect_exclusion_from_cfg(d, episodes_root, log)
+    rep = audit_dir_labels(
+        _expand(d["processed_dir"]),
+        episodes_root,
+        holdout_stages={str(s) for s in (d.get("holdout_stages") or [])},
+        exclusion=exclusion,
+        limit=d.get("limit"),
+        same_job_inconsistency_dirty=float(
+            a_cfg.get("same_job_inconsistency_dirty", 0.05)
+        ),
+        unknown_alias_dirty=float(a_cfg.get("unknown_alias_dirty", 0.01)),
+    )
+    out_path = _expand(a_cfg.get("out", "${ARK_ML_ROOT}/dir_label_audit.json"))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(rep, f, ensure_ascii=False, indent=2)
+    log(f"[audit] episodes={rep['episodes']} actions={rep['actions']} dirty={rep['dirty']}")
+    log(f"[audit] 结论: {rep['conclusion']}")
+    log(f"[audit] 报告 → {out_path}")
+    return rep
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口。"""
     p = argparse.ArgumentParser(prog="python -m ark_core.training.run_v1")
-    p.add_argument("step", choices=["build", "train", "all"])
+    p.add_argument("step", choices=["build", "train", "all", "kfold", "audit_dir"])
     p.add_argument(
         "--config",
         type=Path,
@@ -239,6 +402,13 @@ def main(argv: list[str] | None = None) -> int:
         help="实验配置（默认 <repo>/configs/imitation_v1.yaml）",
     )
     p.add_argument("--report", type=Path, default=None, help="把结果 JSON 写到该路径")
+    p.add_argument(
+        "--increment-from",
+        type=Path,
+        default=None,
+        help="增量模式：旧 run 目录（含 build_report.json 与 *.pt ckpt）。"
+        "build 只编码其未见过的新局（词表/featvec 冻结），train 加载旧权重续训",
+    )
     args = p.parse_args(argv)
 
     # 行缓冲 + 立即 flush：训练耗时长，输出被缓冲会让进度不可观测（约定同 run.py）
@@ -249,13 +419,21 @@ def main(argv: list[str] | None = None) -> int:
     cfg = _load_cfg(cfg_path)
     log(f"[cfg] {cfg_path}")
 
+    increment_from = args.increment_from
+    if increment_from is not None and not increment_from.is_dir():
+        raise SystemExit(f"--increment-from 目录不存在: {increment_from}")
+
     result: dict[str, Any] = {"config": str(cfg_path)}
     if args.step in ("build", "all"):
-        result["build"] = _do_build(cfg, log)
+        result["build"] = _do_build(cfg, log, increment_from)
         # all 模式下把 build 复核后的 holdout 列表传给 train（显式配置时原样透传）
         cfg.setdefault("data", {})["holdout_stages_resolved"] = result["build"]["holdout_stages"]
     if args.step in ("train", "all"):
-        result["train"] = _do_train(cfg, log)
+        result["train"] = _do_train(cfg, log, increment_from)
+    if args.step == "kfold":
+        result["kfold"] = _do_kfold(cfg, log)
+    if args.step == "audit_dir":
+        result["audit_dir"] = _do_audit_dir(cfg, log)
 
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

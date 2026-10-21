@@ -1,0 +1,81 @@
+# 状态-动作行为克隆 v3 配置：K 折关卡轮换留出（评测口径硬化）+ DIR 处置对照
+#
+# 数据源用 **v2 已构建的 npz**（processed/state_action_v2.npz，176 局 / 1161 对，
+# 清洗口径与 v2 相同；本配置不重建数据集，kfold 直接加载它重划分）。
+# 用法：
+#   uv run python -u -m ark_core.training.run_v1 kfold --config configs/imitation_v3_kfold.yaml
+#
+# 口径说明（诚实）：
+# - 折按**基础关卡 id** 分（#f# 变体随基础关同折），种子确定性贪心均衡局数；
+# - 词表是 v2 build 时按 v2 留出冻结的——kfold 里轮换 holdout 后，当折 holdout 关
+#   可能恰好在 v2 词表来源侧，这是「复用已建数据集」的既有口径，如实记录；
+# - dir_loss 双臂对照：full（v2 行为，w_dir=0.5）vs masked（DIR 损失屏蔽，dir_acc
+#   仍逐折上报）。masked 臂用于回答「DIR 弱是标签脏还是学不动」——若 masked 臂的
+#   非 DIR 指标不降、dir_acc 仍贴基线，则 DIR 头在 1.2k 对下本就学不动。
+#
+# 路径解析同 imitation_v1.yaml：一切路径以 ${ARK_ML_ROOT} 展开。
+
+experiment:
+  name: imitation_v3_kfold
+  seed: 42
+  device: cuda
+
+data:
+  root: "${ARK_ML_ROOT}"
+  processed_dir: "${ARK_ML_ROOT}/processed"
+  episodes_root: "${ARK_ML_ROOT}/../ark-data/episodes"   # 真机 episodes（只读）
+  dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v2.npz"  # 复用 v2 产物
+  vocab_top_k: 256
+  limit: null
+
+  # 审计与（若重建时的）清洗口径与 v2 相同，保证数据池一致
+  exclude_by_result: true
+  exclude_scan_file: "bridge/debug/scan_blockers_full.txt"
+
+  # DIR 审计的分侧口径沿用 v2 留出（audit 的 train/holdout 先验对照需要一侧定义）
+  holdout_stages:
+    - main_04-01
+    - main_01-12
+    - main_02-02
+    - main_02-03
+  holdout_min_eps: 3
+  holdout_auto_n: 4
+
+kfold:
+  k: 5
+  seed: 42
+  # 双臂：full = v2 的 DIR 全量损失；masked = DIR 损失屏蔽对照
+  arms:
+    - {name: full, dir_loss: full}
+    - {name: masked, dir_loss: masked}
+
+model:
+  hidden_dim: 256
+  num_layers: 4
+  num_dec_layers: 2
+  num_heads: 8
+  dropout: 0.1
+
+training:
+  stage: imitate_v1
+  epochs: 20
+  batch_size: 16
+  lr: 3.0e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_train_batches: 64
+  w_type: 1.0
+  w_target: 1.0
+  w_cell: 1.0
+  w_dir: 0.5
+  dir_loss_weighted: 0.1   # dir_loss=weighted 时的降权值（本批双臂未用到，备好）
+
+audit_dir:
+  out: "${ARK_ML_ROOT}/dir_label_audit.json"
+  # 脏阈值：同 job 同格同干员方向不一致率 / 未知别名占比，越过即判「标签脏」
+  same_job_inconsistency_dirty: 0.05
+  unknown_alias_dirty: 0.01
+
+evaluation:
+  runs_dir: "${ARK_ML_ROOT}/runs"
+  report_tiers: [holdout]

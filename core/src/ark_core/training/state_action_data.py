@@ -682,3 +682,130 @@ def build_dataset(
         records=np.asarray(records, dtype=object),
     )
     return vocab, stats, len(records)
+
+
+def build_dataset_delta(
+    processed_dir: Path,
+    episodes_root: Path,
+    *,
+    base_npz: Path,
+    out_path: Path,
+    holdout_stages: set[str],
+    limit: int | None = None,
+    vocab_top_k: int = 256,
+    exclusion: ExclusionInfo | None = None,
+) -> tuple[Vocab, BuildStatsV1, dict[str, Any]]:
+    """增量构建：以 ``base_npz`` 为「上次 build」，产物 = 旧记录原样 + 新增局编码。
+
+    集差口径（为什么按 episode_id 而不是目录名）：record 的 ``episode_id`` 形如
+    ``replay-<jobid>-<ts>``、目录名形如 ``job-<jobid>-<ts>``，两侧时间戳不同，
+    目录名不可靠；``episode.json.episode_id`` 与 record 完全同源，故逐局读 meta
+    决定「已见 / 新增」（meta 只有几 KB，昂贵的 job/states 大文件仅对新局读）。
+
+    冻结不变式（如实声明，满足才可安全增量）：
+    - **词表冻结**为 base_npz 的 vocab（``vocab_top_k`` 参数被忽略）：checkpoint
+      的 target 头维度与之绑定，新局未登录的非干员目标落 UNK 并计数；
+    - **featvec 矩阵冻结**为 base_npz 的 featvec：本函数仍从当前 parquet 取
+      name2cid 与 char→row 索引，**若 parquet 被重建导致行序变化，必须全量
+      build_dataset 重建**（行序漂移会让旧记录的 squad_idx 全错位）；
+    - state_dim 必须等于 ``STATE_DIM``，否则直接报错（协议演变时应走新管线）。
+
+    返回 (冻结后的 Vocab, 仅统计新增局的 BuildStatsV1, 增量摘要 dict)。
+    """
+    z = np.load(base_npz, allow_pickle=True)
+    base_records: list[dict[str, Any]] = [dict(r) for r in z["records"]]
+    featvec_mat = z["featvec"]
+    vocab = Vocab(extra_tokens=[str(x) for x in z["vocab"]])
+    state_dim_base = int(z["state_dim"])
+    if state_dim_base != STATE_DIM:
+        raise ValueError(
+            f"base_npz state_dim={state_dim_base} 与当前协议 STATE_DIM={STATE_DIM} 不符，"
+            "增量不可用，请全量 build_dataset"
+        )
+    seen_ids = {str(r.get("episode_id")) for r in base_records}
+
+    stagefeat = _load_stagefeat(processed_dir / "stagefeat.parquet")
+    name2cid = _load_name_map(processed_dir / "featvec_operators.parquet")
+    # featvec 行冻结自 base npz；char→row 索引只用于把新局的 char_id 映射到**同一套行号**。
+    # 注意基底 npz 不存 char_id 列，此处假定 parquet 未重建（见 docstring 冻结不变式），
+    # 并用矩阵全等校验兜底：不一致直接报错，不做静默降级。
+    featvec_ids, featvec_mat_now = _load_featvec(processed_dir / "featvec_operators.parquet")
+    featvec_idx = {cid: i for i, cid in enumerate(featvec_ids)}
+    if featvec_mat_now.shape != featvec_mat.shape or not np.array_equal(
+        featvec_mat_now, featvec_mat
+    ):
+        raise ValueError("base_npz 的 featvec 与当前 parquet 不一致，请全量 build_dataset")
+
+    excluded = exclusion.union() if exclusion is not None else frozenset()
+    stats = BuildStatsV1()
+    new_records: list[dict[str, Any]] = []
+    new_episodes: list[str] = []
+    n_seen_skipped = 0
+    for stage, ep_dir in iter_episode_dirs(episodes_root, None):
+        # 先只读 meta 判定已见/新增（贵文件后读）
+        try:
+            meta = _read_json(ep_dir / "episode.json")
+        except (OSError, json.JSONDecodeError):
+            stats.drop_bad_files += 1
+            continue
+        eid = str(meta.get("episode_id") or ep_dir.name)
+        if eid in seen_ids:
+            n_seen_skipped += 1
+            continue
+        if ep_dir.name in excluded:
+            stats.n_excluded += 1
+            continue
+        stats.n_seen += 1
+        if limit is not None and stats.n_seen > limit:
+            break
+        sid = str(meta.get("stage_id") or stage)
+        sf = stagefeat.get(sid) or stagefeat.get(base_stage_id(sid))
+        if sf is None:
+            stats.drop_no_stage += 1
+            continue
+        try:
+            job = _read_json(Path(str(meta["job_file"])))
+            states = _read_jsonl(ep_dir / "battle_states.jsonl")
+            ev_path = ep_dir / "action_events.jsonl"
+            events = _read_jsonl(ev_path) if ev_path.is_file() else []
+        except (OSError, KeyError, json.JSONDecodeError, TypeError):
+            stats.drop_bad_files += 1
+            continue
+        rec = encode_episode(
+            episode_id=eid,
+            stage_id=sid,
+            job=job,
+            battle_states=states,
+            action_events=events,
+            sf=sf,
+            name2cid=name2cid,
+            featvec_idx=featvec_idx,
+            vocab=vocab,
+            stats=stats,
+        )
+        if rec is None:
+            continue
+        new_records.append(rec)
+        new_episodes.append(ep_dir.name)
+        stats.n_kept += 1
+
+    records = base_records + new_records
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        out_path,
+        n=len(records),
+        featvec=featvec_mat,
+        vocab=np.asarray(vocab.extra_tokens, dtype=object),
+        state_dim=np.asarray(STATE_DIM, dtype=np.int64),
+        state_names=np.asarray(STATE_NAMES, dtype=object),
+        records=np.asarray(records, dtype=object),
+    )
+    delta = {
+        "base_npz": str(base_npz),
+        "n_base_records": len(base_records),
+        "n_new_records": len(new_records),
+        "n_seen_skipped": n_seen_skipped,
+        "new_episode_dirs": new_episodes,
+        "total_records": len(records),
+    }
+    return vocab, stats, delta

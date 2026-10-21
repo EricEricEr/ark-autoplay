@@ -470,7 +470,7 @@ def _mk_real_episode(root: Path, stage: str, name: str, tmp_path: Path) -> None:
         root,
         stage,
         name,
-        {"episode_id": name, "stage_id": "main_99-01", "job_file": str(job_path)},
+        {"episode_id": name, "stage_id": stage, "job_file": str(job_path)},
     )
     (ed / "battle_states.jsonl").write_text(
         json.dumps(_bs(1.0)) + "\n" + json.dumps(_bs(2.0)) + "\n", encoding="utf-8"
@@ -503,3 +503,143 @@ def test_build_dataset_applies_exclusion(tmp_path: Path) -> None:
         exclusion=None,
     )
     assert (n2, stats2.n_kept, stats2.n_excluded) == (2, 2, 0)
+
+
+# ---------------------------------------------------------------- 增量构建（v3 钩子）
+
+
+def test_build_dataset_delta_only_new(tmp_path: Path) -> None:
+    """增量：base npz 旧记录原样保留，只编码新局，词表/featvec 冻结。"""
+    from ark_core.training.state_action_data import build_dataset_delta
+
+    root = tmp_path / "episodes"
+    processed = tmp_path / "processed"
+    _write_min_processed(processed)
+    _mk_real_episode(root, "main_99-01", "job-old1-20261020-000001", tmp_path)
+    _mk_real_episode(root, "main_99-01", "job-old2-20261020-000002", tmp_path)
+    base_npz = tmp_path / "base.npz"
+    _v, base_stats, base_n = build_dataset(
+        processed, root, out_path=base_npz, holdout_stages=set()
+    )
+    assert (base_n, base_stats.n_kept) == (2, 2)
+
+    # 后到 3 局（其中 1 局关卡在 stagefeat 查不到 → drop_no_stage，验证统计口径）
+    _mk_real_episode(root, "main_99-01", "job-new1-20261021-000001", tmp_path)
+    _mk_real_episode(root, "main_99-01", "job-new2-20261021-000002", tmp_path)
+    _mk_real_episode(root, "main_99-01", "job-new3-20261021-000003", tmp_path)
+    bad = _mk_episode_dir(
+        root, "main_77-77", "job-nostage-20261021-000004", None
+    )
+    (bad / "battle_states.jsonl").write_text("{}\n", encoding="utf-8")
+    bad_job = tmp_path / "job_bad.json"
+    bad_job.write_text(json.dumps(_job([], opers=["能天使"])), encoding="utf-8")
+    (bad / "episode.json").write_text(
+        json.dumps(
+            {"episode_id": "job-nostage-20261021-000004", "stage_id": "main_77-77",
+             "job_file": str(bad_job)}
+        ),
+        encoding="utf-8",
+    )
+
+    out_npz = tmp_path / "delta.npz"
+    vocab, stats, delta = build_dataset_delta(
+        processed,
+        root,
+        base_npz=base_npz,
+        out_path=out_npz,
+        holdout_stages=set(),
+    )
+    assert delta["n_base_records"] == 2
+    assert delta["n_new_records"] == 3
+    assert delta["n_seen_skipped"] == 2
+    assert delta["total_records"] == 5
+    assert stats.n_kept == 3 and stats.drop_no_stage == 1
+    # 旧记录原样在前、新记录依次在后；词表与 base 完全一致（冻结）
+    z = np.load(out_npz, allow_pickle=True)
+    ids = [str(r["episode_id"]) for r in z["records"]]
+    assert ids[:2] == ["job-old1-20261020-000001", "job-old2-20261020-000002"]
+    assert sorted(ids[2:]) == [
+        "job-new1-20261021-000001",
+        "job-new2-20261021-000002",
+        "job-new3-20261021-000003",
+    ]
+    zb = np.load(base_npz, allow_pickle=True)
+    assert [str(x) for x in z["vocab"]] == [str(x) for x in zb["vocab"]]
+    assert np.array_equal(z["featvec"], zb["featvec"])
+    # 再跑一遍同基底：没有新局则零增量（无 stage 的坏局不算 seen，每次都被重试并计数）
+    _v2, _s2, delta2 = build_dataset_delta(
+        processed, root, base_npz=out_npz, out_path=tmp_path / "delta2.npz",
+        holdout_stages=set(),
+    )
+    assert delta2["n_new_records"] == 0 and delta2["n_seen_skipped"] == 5
+    assert _s2.drop_no_stage == 1
+
+
+# ---------------------------------------------------------------- 增量续训（v3 resume 冒烟）
+
+
+def test_train_resume_from_ckpt(tmp_path: Path) -> None:
+    """resume_from 加载旧权重续训：形状匹配时链路通畅（2 局 / 2 epoch 冒烟）。"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from ark_core.models.track_a.policy_v1 import TrackAPolicyV1
+    from ark_core.training.imitate_v1 import train
+
+    root = tmp_path / "episodes"
+    processed = tmp_path / "processed"
+    processed.mkdir(parents=True)
+    # 两关卡 stagefeat（第二关进 holdout，满足 train() 的非空断言）
+    grid = _sf()["grid"]
+    pq.write_table(
+        pa.table(
+            {
+                "stage_id": ["main_99-01", "main_99-02"],
+                "rows": [ROWS, ROWS],
+                "cols": [COLS, COLS],
+                "grid": [grid, grid],
+                "spawns": [[], []],
+                "opt_initial_cost": [10, 10],
+            }
+        ),
+        processed / "stagefeat.parquet",
+    )
+    pq.write_table(
+        pa.table(
+            {
+                "char_id": ["char_103_angel", "char_222_bpipe"],
+                "name": ["能天使", "风笛"],
+                "rarity_tier": [6, 6],
+                "sub_profession": ["x", "y"],
+                "v0": [1.0, 0.0],
+                "v1": [0.0, 1.0],
+            }
+        ),
+        processed / "featvec_operators.parquet",
+    )
+    _mk_real_episode(root, "main_99-01", "job-t-20261021-000001", tmp_path)
+    _mk_real_episode(root, "main_99-02", "job-h-20261021-000002", tmp_path)
+    npz = tmp_path / "ds.npz"
+    vocab, _stats, n = build_dataset(processed, root, out_path=npz, holdout_stages=set())
+    assert n == 2
+
+    ckpt = tmp_path / "old.pt"
+    model0 = TrackAPolicyV1(
+        featvec_dim=2, vocab_size=vocab.size, max_squad=MAX_SQUAD, state_dim=STATE_DIM,
+        d_model=32, n_heads=4, n_layers=1, n_dec_layers=1, dropout=0.0,
+    )
+    torch.save({"state_dict": model0.state_dict()}, ckpt)
+
+    rep = train(
+        npz,
+        TrainConfig(d_model=32, n_heads=4, n_layers=1, n_dec_layers=1, dropout=0.0, epochs=2),
+        holdout_stages={"main_99-02"},
+        out_dir=tmp_path / "run",
+        device_str="cpu",
+        log=lambda *_: None,
+        ckpt_name="new.pt",
+        resume_from=ckpt,
+    )
+    assert rep["n_train"] == 1 and rep["n_holdout"] == 1
+    assert rep["best_epoch"] >= 1
+    assert (tmp_path / "run" / "new.pt").is_file()

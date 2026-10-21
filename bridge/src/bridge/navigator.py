@@ -48,6 +48,33 @@ def blue_fraction(img: Image.Image, region: list[int]) -> float:
     return float(np.mean((b > 140) & (b - r > 50) & (b - g > 30)))
 
 
+def briefing_blue_ok(img: Any, region: list[int], threshold: float = 0.25) -> bool:
+    """briefing（"开始行动"蓝钮在屏）判定：``blue_fraction >= threshold``。
+
+    供 ``nav_maa.navigate_only`` 终点屏校验复用（2026-10-21，1-11 假成功
+    RCA 修复方案 A；判定式与标定沿用 ``blue_fraction`` 与
+    ``configs/nav_main.yaml`` 的 ``brief_blue_check``，未新造一套）。
+    输入 PIL Image 或 numpy RGB 数组（内部统一转 PIL 走既有判定式）；
+    区域越界/异常帧自然落到不通过（fail-closed，宁判导航失败不放假成功）。
+    """
+    if not isinstance(img, Image.Image):
+        arr = np.asarray(img)
+        if arr.ndim != 3 or arr.shape[2] < 3:
+            return False
+        img = Image.fromarray(arr[..., :3].astype(np.uint8))
+    # 区域必须整幅在屏内（1920x1080 标定）；越界切片会得到空区域 NaN，
+    # 与其靠 NaN 比较兜底，不如在源头 fail-closed 且不留 RuntimeWarning
+    x, y, w, h = region
+    w_img, h_img = img.size
+    if x < 0 or y < 0 or x + w > w_img or y + h > h_img:
+        return False
+    try:
+        frac = blue_fraction(img, region)
+    except Exception:  # noqa: BLE001  # 异常帧按不通过处理
+        return False
+    return frac >= float(threshold)
+
+
 class Navigator:
     """固定点位导航器（一个模拟器实例一个 Navigator）。"""
 

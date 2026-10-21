@@ -248,8 +248,21 @@ class ReplayController:
         inst = load_instance_config(instance_cfg_path)
         assert_patched_runtime(inst, instance_cfg_path)
         self._driver = MaaDriver(inst, maa_user)
-        # 不再需要独立导航器：Copilot 自带导航（见 nav_maa 模块 docstring）。
-        # nav_cfg_path 仅保留签名兼容，几何标定表已废弃。
+        # 终点屏校验标定（2026-10-21，1-11 假成功 RCA 修复方案 A）：
+        # 从 nav_cfg（configs/nav_main.yaml）取 brief_blue_check 蓝钮区域/阈值，
+        # 传给 nav_maa.navigate_only 做"链完成后再验终点屏"。配置不可用则
+        # 关闭校验并显式告警（不拦工厂启动，但日志必须看得见）。
+        self._brief_check: dict | None = None
+        try:
+            from bridge.navigator import Navigator  # noqa: PLC0415  # 装配期才用
+
+            nav_cfg = Navigator.load_nav_config(nav_cfg_path)
+            self._brief_check = dict(nav_cfg["brief_blue_check"])
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[factory] ⚠ 终点屏校验配置不可用（{exc!r}），导航不做终点屏校验",
+                flush=True,
+            )
         self._writer = EpisodeWriter(self._work)
 
     def _write_maa_job(self, entry: dict[str, Any]) -> Path:
@@ -343,14 +356,19 @@ class ReplayController:
         # 根治（见 bridge/patches/0004 任务），桥侧无法在详情页插手中途步骤。
         nav_ok = False
         try:
-            nav_ok = navigate_only(self._driver, stage_code, watchdog=sentry)
+            nav_ok = navigate_only(
+                self._driver,
+                stage_code,
+                watchdog=sentry,
+                endpoint_cfg=self._brief_check,
+            )
         except NavigationError as exc:
             print(f"[job {job_id}] 导航失败: {exc}", flush=True)
             summary.update(ok=False, error=f"nav: {exc}")
             return summary
         if not nav_ok:
             print(f"[job {job_id}] 导航未完成（{stage_code}）", flush=True)
-            summary.update(ok=False, error="nav: 未到准备界面")
+            summary.update(ok=False, error="nav: 未到准备界面(endpoint_check_failed)")
             return summary
         print(f"[job {job_id}] 已导航到 {stage_code} 准备界面（nav_only）", flush=True)
 

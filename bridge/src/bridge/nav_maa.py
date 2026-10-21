@@ -39,6 +39,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from bridge.navigator import briefing_blue_ok
+
 if TYPE_CHECKING:
     from bridge.blocker_watchdog import BlockerSentry
     from bridge.maa_driver import MaaDriver
@@ -186,8 +188,11 @@ def _tap_camp_entry(driver: MaaDriver, stage_code: str) -> None:
         import subprocess as _sp
         _adb = r"E:\Program Files\Netease\MuMu\nx_main\adb.exe"
         for _ in range(3):
-            _sp.run([_adb, "-s", "127.0.0.1:16416", "shell", "input", "swipe",
-                     "1466", "380", "1466", "1000", "260"], capture_output=True, timeout=25)
+            _sp.run(
+                [_adb, "-s", "127.0.0.1:16416", "shell", "input", "swipe",
+                 "1466", "380", "1466", "1000", "260"],
+                capture_output=True, timeout=25,
+            )
             time.sleep(0.6)
         time.sleep(1.0)
         print("[nav] 剿灭列表已滚回顶部", flush=True)
@@ -200,11 +205,43 @@ def _tap_camp_entry(driver: MaaDriver, stage_code: str) -> None:
         print(f"[nav] 剿灭列表点选 {stage_code} @(1466,{y})", flush=True)
 
 
+def _endpoint_briefing_ok(
+    driver: MaaDriver, endpoint_cfg: dict[str, Any], stage_code: str
+) -> bool:
+    """终点屏校验壳：screencap 一帧过蓝钮判定；异常按不通过（fail-closed）。
+
+    针对 1-11 假成功 RCA（2026-10-21 取证，证据：asst.log 58183 行链启动 →
+    58478 行起 30+ 次滑动全 ExceededLimit → 58871 行 Home(action=Stop)
+    →  58881 行 TaskChainCompleted）：MAA 任务图把"找不到关卡"的
+    exceededNext 设计为回主页并**正常结束**，链完成 ≠ 已到 briefing，
+    必须补一次像素级终点屏判定。
+    """
+    try:
+        img = driver.screencap()
+    except Exception as exc:  # noqa: BLE001  # 截图失败同样按假成功处理
+        print(
+            f"[nav] endpoint_check_failed: {stage_code} 截图异常 {exc!r}",
+            flush=True,
+        )
+        return False
+    ok = briefing_blue_ok(
+        img, endpoint_cfg["region"], float(endpoint_cfg["threshold"])
+    )
+    if not ok:
+        print(
+            f"[nav] endpoint_check_failed: 链已完成但终点屏不是 briefing"
+            f"（{stage_code}，蓝钮校验未过，疑似 Home 兜底假成功）",
+            flush=True,
+        )
+    return ok
+
+
 def navigate_only(
     driver: MaaDriver,
     stage_code: str,
     timeout_s: float = 180.0,
     watchdog: BlockerSentry | None = None,
+    endpoint_cfg: dict[str, Any] | None = None,
 ) -> bool:
     """把游戏从主页导航到 ``stage_code`` 的准备界面，**不开打、不碰代理**。
 
@@ -226,27 +263,45 @@ def navigate_only(
     ``watchdog``（2026-10-20 卡死自愈）：等待循环里每次迭代过一遍阻断器
     哨兵（同步弹窗等可在导航途中弹出）；不传则行为与旧版完全一致。
 
-    返回是否在超时内导航完成（``TaskChainCompleted``）。
+    ``endpoint_cfg``（2026-10-21，1-11 假成功 RCA 修复方案 A）：形如
+    ``{"region": [x,y,w,h], "threshold": float}`` 的 briefing 蓝钮校验
+    参数（来自 ``configs/nav_main.yaml`` 的 ``brief_blue_check``，经
+    ``Navigator.load_nav_config`` 提取）。给出时，拿到链完成事件后必须
+    再通过一次终点屏像素判定（``_endpoint_briefing_ok``）才返回 True；
+    不给 = 旧行为（不校验）——剿灭兜底分支（Annihilation→列表点选后停在
+    作战地图，本就没有 briefing 蓝钮）**不适用**该校验，天然豁免。
+
+    ⚠️ 为什么需要它：MAA 任务图找不到关卡时走 ``<stage>@Home@QuickSwitch``
+    兜底回主页且正常收尾（实测 1-11 八连假成功，asst.log 58858-58881 行），
+    ``TaskChainCompleted`` 语义上**不保证已到准备界面**。
+
+    返回是否在超时内导航完成 **且（开启时）终点屏确为 briefing**。
     """
     import os as _os
     if _os.environ.get("ARK_NAV_SKIP") == "1":
         # 人工把游戏停在目标关卡的准备界面时用（2026-10-14 加入）：
         # 直接认为导航已完成，避免 MAA 把用户摆好的界面挪走。
-        print(f"[nav] ARK_NAV_SKIP=1，跳过导航，假定已停在 {stage_code} 准备界面", flush=True)
+        print(
+            f"[nav] ARK_NAV_SKIP=1，跳过导航，假定已停在 {stage_code} 准备界面",
+            flush=True,
+        )
         return True
     camp_fallback = False
     # 2026-10-14 修根因(2)：剿灭关卡一律直接走 Annihilation 兜底。
     # 实测 append_task(Fight, {"stage": "camp_XX"}) 偶尔返回非 0 并"完成"，
     # 于是既没进兜底分支、也从未点选列表 → 游戏留在上一场的图（默祷圣祠），
     # 而调用方仍收到"导航成功"（静默假成功）。强制走兜底可保证一定点选。
-    tid = 0 if str(stage_code).startswith("camp_") else driver.append_task("Fight", {"stage": stage_code, "nav_only": True})
+    if str(stage_code).startswith("camp_"):
+        tid = 0
+    else:
+        tid = driver.append_task("Fight", {"stage": stage_code, "nav_only": True})
     if not tid and str(stage_code).startswith("camp_"):
         # 剿灭兜底（2026-10-13 实测）：StageNavigationTask::set_stage_name 只认
-        # 「同名 task」或主线正则（字母0-3位 + 数字-数字），camp_01/02/03 两者都不满足
-        # → append 返回 0、整局被判「导航失败」。但剿灭的内部标识 Annihilation 是被
-        # 接受的（MaaCore 源码注释：内部标识与显示代号不一致的关卡，如剿灭 Annihilation），
-        # nav_only 下 MAA 会把游戏导航到剿灭作战地图；之后由 Copilot 自带的
-        # navigate_to_stage 在地图内滑到具体剿灭关卡。
+        # 「同名 task」或主线正则（字母0-3位 + 数字-数字），camp_01/02/03 两者都
+        # 不满足 → append 返回 0、整局被判「导航失败」。但剿灭的内部标识
+        # Annihilation 是被接受的（MaaCore 源码注释：内部标识与显示代号不一致的
+        # 关卡，如剿灭 Annihilation），nav_only 下 MAA 会把游戏导航到剿灭作战
+        # 地图；之后由 Copilot 自带的 navigate_to_stage 在地图内滑到具体剿灭关卡。
         tid = driver.append_task("Fight", {"stage": "Annihilation", "nav_only": True})
         camp_fallback = bool(tid)
     if not tid:
@@ -268,15 +323,34 @@ def navigate_only(
     mark = driver.mark()
     t_start = time.monotonic()
     deadline = t_start + timeout_s
+    home_fallback_warned = False
     while time.monotonic() < deadline:
         if watchdog is not None:
             watchdog.poll()
         evts, mark = driver.events_since(mark)
         for evt in evts:
+            # Home 兜底分支告警（统计用途，warn 级；出现即高度疑似假成功，
+            # 与终点屏校验联动——见 _endpoint_briefing_ok 的 RCA 引用）。
+            if not home_fallback_warned:
+                d = evt.details if isinstance(evt.details, dict) else {}
+                det = d.get("details") if isinstance(d.get("details"), dict) else {}
+                t = str(d.get("task") or det.get("task") or d.get("cur_task") or "")
+                if "@Home@QuickSwitch" in t:
+                    home_fallback_warned = True
+                    print(
+                        f"[nav] ⚠ {stage_code} 导航走到 MAA Home 兜底分支"
+                        "（找不到关卡，疑假成功前兆）",
+                        flush=True,
+                    )
             if evt.msg in ("TaskChainCompleted", "AllTasksCompleted"):
                 # 2026-10-14：剿灭兜底即使"完成"也必须点选，否则会静默留在旧图。
                 if camp_fallback and stage_code in _CAMP_ENTRY_Y:
                     _tap_camp_entry(driver, stage_code)
+                # 终点屏校验（方案 A）：链完成≠到 briefing，见 docstring 说明
+                elif endpoint_cfg is not None and not _endpoint_briefing_ok(
+                    driver, endpoint_cfg, stage_code
+                ):
+                    return False
                 wait_idle(driver, timeout_s=20.0)
                 return True
             if evt.msg in ("TaskChainError", "TaskChainStopped"):
@@ -288,9 +362,9 @@ def navigate_only(
                     grace = 18.0 - (time.monotonic() - t_start)
                     if grace > 0:
                         time.sleep(grace)
-                    # 关键一步（2026-10-13 实测踩坑）：剿灭列表默认停在第一个条目
-                    # （默祷圣祠）。若不点选，Copilot 会拿「这张图」的点位去打「另一张图」
-                    # → 干员放下却零击杀、约 100 秒被冲爆，且不报错。
+                    # 关键一步（2026-10-13 实测踩坑）：剿灭列表默认停在第一个
+                    # 条目（默祷圣祠）。若不点选，Copilot 会拿「这张图」的点位去
+                    # 打「另一张图」→ 干员放下却零击杀、约 100 秒被冲爆，且不报错。
                     _tap_camp_entry(driver, stage_code)
                     wait_idle(driver, timeout_s=20.0)
                     return True

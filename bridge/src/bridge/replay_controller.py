@@ -42,6 +42,11 @@ from pathlib import Path
 from typing import Any
 
 from bridge.battle_state import battle_state_to_record, summarize_states
+from bridge.blocker_watchdog import (
+    BLOCKER_SETTLE_LOST,
+    BlockerSentry,
+    resolve_battle_result,
+)
 from bridge.episode_writer import EpisodeWriter
 from bridge.maa_driver import MaaDriver, load_instance_config
 from bridge.nav_maa import (
@@ -270,6 +275,9 @@ class ReplayController:
         t0_wall = int(t0 * 1000)
         records: list[dict[str, Any]] = []
         states: list[dict[str, Any]] = []
+        # 卡死自愈哨兵（2026-10-20）：贯穿全 episode 的阻断画面轮询/消解/记账，
+        # 事件最终写进 episode.json 的 blockers_dismissed，判负屏供 battle_result。
+        sentry = BlockerSentry(self._driver, t0_wall)
 
         def rec(msg: str, **kw: Any) -> None:
             records.append(
@@ -306,14 +314,16 @@ class ReplayController:
         # 要求从已知界面起步；上一局结束后游戏可能停在结算/地图/任意界面，
         # 直接 nav_only 会让 `StageBegin` 立即 SubTaskError、整批全灭
         # （实测 20 局批量 ok 0/20，每局仅 6 秒即失败）。
-        if not wait_settle(self._driver, timeout_s=_SETTLE_TIMEOUT_S):
+        if not wait_settle(
+            self._driver, timeout_s=_SETTLE_TIMEOUT_S, watchdog=sentry
+        ):
             # 实测（2026-10-10 批量）：收尾瞬间的弹窗/非主页态会让 StartUp 链偶发失败，
             # 而**紧接重试往往 8 秒内即成功**。故这里做有界重试，避免把可恢复的局
             # 直接记成 pre 失败（v6 批量里这类损失占 3/20）。
             recovered = False
             for attempt in (1, 2):
                 if wait_idle(self._driver, timeout_s=20.0) and wait_settle(
-                    self._driver, timeout_s=_SETTLE_TIMEOUT_S
+                    self._driver, timeout_s=_SETTLE_TIMEOUT_S, watchdog=sentry
                 ):
                     recovered = True
                     print(
@@ -333,7 +343,7 @@ class ReplayController:
         # 根治（见 bridge/patches/0004 任务），桥侧无法在详情页插手中途步骤。
         nav_ok = False
         try:
-            nav_ok = navigate_only(self._driver, stage_code)
+            nav_ok = navigate_only(self._driver, stage_code, watchdog=sentry)
         except NavigationError as exc:
             print(f"[job {job_id}] 导航失败: {exc}", flush=True)
             summary.update(ok=False, error=f"nav: {exc}")
@@ -358,6 +368,10 @@ class ReplayController:
         logger = StateLogger(self._driver, run_dir, on_shot=on_shot)
         logger.start()
         logger.snap("briefing")
+        # 判负证据窗口起点（Copilot 下发前）：窗口内哨兵消解的 settle_lost
+        # 是本局判负的直接证据。窗口不从 episode 头起算——避开上一局残留的
+        # 判负屏在 pre-nav 阶段被消解后**错记到本局头上**。
+        battle_mark = sentry.count()
 
         tid = self._driver.append_copilot(
             job_file, formation=True, support_unit_usage=_SUPPORT_UNIT_USAGE
@@ -442,6 +456,9 @@ class ReplayController:
                 scan_prts(evt, after=False)
 
         while self._driver.running() and terminal is None:
+            # 卡死自愈：作战中弹出的阻断画面（如"干员等级过低"红横幅会让
+            # MAA 链静止）在此轮询消解；哨兵内部 1s 节流，不加 adb 压力。
+            sentry.poll()
             fresh, cursor = self._driver.events_since(cursor)
             drain(fresh)
             if time.monotonic() > deadline:
@@ -476,7 +493,12 @@ class ReplayController:
         result_files: list[str] = []
         rel = logger.snap("settle")
         result_files.append(rel)
-        settled = wait_settle(self._driver, timeout_s=_SETTLE_TIMEOUT_S)
+        settled = wait_settle(
+            self._driver, timeout_s=_SETTLE_TIMEOUT_S, watchdog=sentry
+        )
+        # 判负证据窗口（Copilot 下发起算，见上 battle_mark）：覆盖作战中途
+        # 判负与结算推进判负两种时序；消解动作本身经过哨兵双确认。
+        lost_hits = sentry.hits_since(battle_mark, BLOCKER_SETTLE_LOST)
         logger.stop()
         # D9 接线（2026-10-10）：黑帧已由 state_logger 丢弃，snap 会返回
         # "BLACK_DROPPED:<n>" 标记；结果帧列表里不能混入这种标记。
@@ -507,6 +529,18 @@ class ReplayController:
             "job_file": str(job_file),
             "result_screen_files": [result_first, result_last],
             "action_events_file": "action_events.jsonl",
+            # 卡死自愈（2026-10-20）：全 episode 阻断画面消解记录
+            # [{kind, t_ms, n}]，t_ms 与 action_events.jsonl 同基准；
+            # 空列表 = 全程无阻断，不省略该字段（与旧 bundle 区分口径）。
+            "blockers_dismissed": sentry.events(),
+            # 胜负标记（bridge 自有字段，不动 core/protocol）：
+            # "win"/"lost"/"unknown"，规则见 blocker_watchdog.resolve_battle_result。
+            # 方案 §10「只留通关局」→ 下游按 battle_result == "win" 过滤。
+            "battle_result": resolve_battle_result(
+                lost_confirmed=bool(lost_hits),
+                chain_completed=(terminal == "TaskChainCompleted"),
+                settled=settled,
+            ),
             # 战场状态（需 patched MaaCore）：无记录时为 None 且不落文件
             "battle_states_file": states_path.name if states_path else None,
             "battle_states": state_summary,
@@ -540,6 +574,8 @@ class ReplayController:
             prts_detected_after_battle=prts_after,
             settled=settled,
             shots_dropped_black=logger.shots_dropped_black,
+            battle_result=episode["battle_result"],
+            blockers_dismissed=len(sentry.events()),
         )
         print(
             f"[job {job_id}] episode -> {ep_path}  "

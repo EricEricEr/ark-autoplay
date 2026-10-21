@@ -10,6 +10,16 @@ bundle 结构与 ``data-validation/capture_episode.py`` 已验证格式一致：
 - ``shots_dropped_black``（**可选**，D9 2026-10-10）：本局被判黑帧并丢弃的帧数，
   由 StateLogger.shots_dropped_black 提供（节拍保持 1.5s，黑帧不落盘、只标注）；
   非必填——旧 bundle 没有该字段仍合法，缺省视为"未统计"，不视为 0；
+- ``blockers_dismissed``（**可选**，2026-10-20 卡死自愈）：本局看门狗自动
+  消解的阻断画面事件 ``[{kind, t_ms, n}]``——kind ∈
+  ``prts_level_low`` / ``settle_lost`` / ``sync_updated``（定义见
+  ``blocker_watchdog``），t_ms 与 action_events.jsonl 同基准，n 为该类
+  第几次消解；空列表 = 全程无阻断。旧 bundle 无此字段 = 看门狗上线前的数据；
+- ``battle_result``（**可选**，2026-10-20）：本局胜负标记
+  ``"win" / "lost" / "unknown"``（推导规则见
+  ``blocker_watchdog.resolve_battle_result``——结算段检出判负屏为 lost，
+  链路完成且收尾成功为 win，其余 unknown）。方案 §10「只留通关局」的下游
+  过滤口径 = ``battle_result == "win"``；旧 bundle 无此字段一律按 unknown 处理；
 - ``action_events.jsonl``：回调事件流 + 截图标记（相对毫秒时间戳）；
 - ``shots/``：节拍帧 + 动作触发帧 + 结算帧（**本机留存**，
   入仓内容仅限 sha256 清单——素材红线 §3.2/§6.3）。
@@ -114,6 +124,30 @@ class EpisodeWriter:
             not isinstance(dropped, int) or isinstance(dropped, bool) or dropped < 0
         ):
             raise ValueError(f"shots_dropped_black 必须是非负整数，收到 {dropped!r}")
+        battle_result = episode.get("battle_result")
+        if battle_result is not None and battle_result not in (
+            "win",
+            "lost",
+            "unknown",
+        ):
+            raise ValueError(
+                f"battle_result 必须是 win/lost/unknown，收到 {battle_result!r}"
+            )
+        blockers = episode.get("blockers_dismissed")
+        if blockers is not None:
+            if not isinstance(blockers, list):
+                raise ValueError("blockers_dismissed 必须是列表")
+            for e in blockers:
+                ok = (
+                    isinstance(e, dict)
+                    and isinstance(e.get("kind"), str)
+                    and isinstance(e.get("t_ms"), int)
+                    and not isinstance(e.get("t_ms"), bool)
+                    and isinstance(e.get("n"), int)
+                    and not isinstance(e.get("n"), bool)
+                )
+                if not ok:
+                    raise ValueError(f"blockers_dismissed 条目非法: {e!r}")
 
     def write_episode(self, run_dir: str | Path, episode: dict[str, Any]) -> Path:
         """戳协议版本、补齐截图清单、自检后写 ``episode.json``。"""

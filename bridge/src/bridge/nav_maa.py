@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from bridge.blocker_watchdog import BlockerSentry
     from bridge.maa_driver import MaaDriver
 
 # Copilot 任务链里代表"已进入作战"的任务名（用于诊断，不用于截停）
@@ -163,7 +164,48 @@ def safe_copilot_params(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     return p
 
 
-def navigate_only(driver: MaaDriver, stage_code: str, timeout_s: float = 180.0) -> bool:
+# 剿灭列表条目在 1920x1080 下的点击 y 坐标（2026-10-13 截图 OCR 实测；
+# 名字来自游戏内「剿灭委托 / 剿灭战模拟」列表）。x 固定 1466（条目卡片中部）。
+_CAMP_ENTRY_Y: dict[str, int] = {
+    "camp_01": 657,    # 乌萨斯 - 切尔诺伯格
+    "camp_02": 357,    # 炎国 - 龙门外环
+    "camp_03": 507,    # 炎国 - 龙门市区
+    "camp_r_03": 1023, # 乌萨斯 - 废弃矿区（剿灭战模拟）
+    "camp_r_15": 873,  # 炎国 - 龙门商业街（剿灭战模拟）
+    "camp_r_33": 134,  # 拉特兰 - 默祷圣祠（剿灭委托）
+}
+
+
+def _tap_camp_entry(driver: MaaDriver, stage_code: str) -> None:
+    """把剿灭列表滚回顶部后点选目标关卡。
+
+    两层保险：先把列表连续下拉回顶部（游戏会记住上次的滚动位置），
+    再按 _CAMP_ENTRY_Y 的固定 y 点击；y 坐标只在列表处于顶部时才确定。
+    """
+    try:
+        import subprocess as _sp
+        _adb = r"E:\Program Files\Netease\MuMu\nx_main\adb.exe"
+        for _ in range(3):
+            _sp.run([_adb, "-s", "127.0.0.1:16416", "shell", "input", "swipe",
+                     "1466", "380", "1466", "1000", "260"], capture_output=True, timeout=25)
+            time.sleep(0.6)
+        time.sleep(1.0)
+        print("[nav] 剿灭列表已滚回顶部", flush=True)
+    except Exception as _ex:
+        print(f"[nav] 列表滚顶失败：{_ex!r}", flush=True)
+    y = _CAMP_ENTRY_Y.get(str(stage_code))
+    if y:
+        driver.tap(1466, y)
+        time.sleep(2.5)
+        print(f"[nav] 剿灭列表点选 {stage_code} @(1466,{y})", flush=True)
+
+
+def navigate_only(
+    driver: MaaDriver,
+    stage_code: str,
+    timeout_s: float = 180.0,
+    watchdog: BlockerSentry | None = None,
+) -> bool:
     """把游戏从主页导航到 ``stage_code`` 的准备界面，**不开打、不碰代理**。
 
     依赖 **patch 0002**（``patches/0002-fight-nav-only.patch``）：给 ``Fight``
@@ -181,9 +223,32 @@ def navigate_only(driver: MaaDriver, stage_code: str, timeout_s: float = 180.0) 
     ``StartButton1`` **之前**，只要该关有代理记录就必然先点代理；而自抽号的
     代理记录是号商机械刷出的异常数值，对训练无价值。
 
+    ``watchdog``（2026-10-20 卡死自愈）：等待循环里每次迭代过一遍阻断器
+    哨兵（同步弹窗等可在导航途中弹出）；不传则行为与旧版完全一致。
+
     返回是否在超时内导航完成（``TaskChainCompleted``）。
     """
-    tid = driver.append_task("Fight", {"stage": stage_code, "nav_only": True})
+    import os as _os
+    if _os.environ.get("ARK_NAV_SKIP") == "1":
+        # 人工把游戏停在目标关卡的准备界面时用（2026-10-14 加入）：
+        # 直接认为导航已完成，避免 MAA 把用户摆好的界面挪走。
+        print(f"[nav] ARK_NAV_SKIP=1，跳过导航，假定已停在 {stage_code} 准备界面", flush=True)
+        return True
+    camp_fallback = False
+    # 2026-10-14 修根因(2)：剿灭关卡一律直接走 Annihilation 兜底。
+    # 实测 append_task(Fight, {"stage": "camp_XX"}) 偶尔返回非 0 并"完成"，
+    # 于是既没进兜底分支、也从未点选列表 → 游戏留在上一场的图（默祷圣祠），
+    # 而调用方仍收到"导航成功"（静默假成功）。强制走兜底可保证一定点选。
+    tid = 0 if str(stage_code).startswith("camp_") else driver.append_task("Fight", {"stage": stage_code, "nav_only": True})
+    if not tid and str(stage_code).startswith("camp_"):
+        # 剿灭兜底（2026-10-13 实测）：StageNavigationTask::set_stage_name 只认
+        # 「同名 task」或主线正则（字母0-3位 + 数字-数字），camp_01/02/03 两者都不满足
+        # → append 返回 0、整局被判「导航失败」。但剿灭的内部标识 Annihilation 是被
+        # 接受的（MaaCore 源码注释：内部标识与显示代号不一致的关卡，如剿灭 Annihilation），
+        # nav_only 下 MAA 会把游戏导航到剿灭作战地图；之后由 Copilot 自带的
+        # navigate_to_stage 在地图内滑到具体剿灭关卡。
+        tid = driver.append_task("Fight", {"stage": "Annihilation", "nav_only": True})
+        camp_fallback = bool(tid)
     if not tid:
         raise NavigationError(
             f"append_task(Fight, nav_only=True) 返回 0: {stage_code}"
@@ -201,15 +266,34 @@ def navigate_only(driver: MaaDriver, stage_code: str, timeout_s: float = 180.0) 
             return False
 
     mark = driver.mark()
-    deadline = time.monotonic() + timeout_s
+    t_start = time.monotonic()
+    deadline = t_start + timeout_s
     while time.monotonic() < deadline:
+        if watchdog is not None:
+            watchdog.poll()
         evts, mark = driver.events_since(mark)
         for evt in evts:
             if evt.msg in ("TaskChainCompleted", "AllTasksCompleted"):
-                # 等到真正空闲再返回，供调用方紧接着下发下一个任务
+                # 2026-10-14：剿灭兜底即使"完成"也必须点选，否则会静默留在旧图。
+                if camp_fallback and stage_code in _CAMP_ENTRY_Y:
+                    _tap_camp_entry(driver, stage_code)
                 wait_idle(driver, timeout_s=20.0)
                 return True
             if evt.msg in ("TaskChainError", "TaskChainStopped"):
+                if camp_fallback:
+                    # 剿灭兜底：MAA 的 Annihilation 任务链必然以
+                    # Annihilation@UnableToAgent2 → StageNavigationTask error 收尾
+                    # （账号没有 PRTS 代理指挥卡），但报错前它已经点开了剿灭地图。
+                    # 故把「点到地图」视为导航成功，剩余滑找交给 Copilot。
+                    grace = 18.0 - (time.monotonic() - t_start)
+                    if grace > 0:
+                        time.sleep(grace)
+                    # 关键一步（2026-10-13 实测踩坑）：剿灭列表默认停在第一个条目
+                    # （默祷圣祠）。若不点选，Copilot 会拿「这张图」的点位去打「另一张图」
+                    # → 干员放下却零击杀、约 100 秒被冲爆，且不报错。
+                    _tap_camp_entry(driver, stage_code)
+                    wait_idle(driver, timeout_s=20.0)
+                    return True
                 return False
         time.sleep(0.2)
     return False
@@ -244,12 +328,20 @@ def wait_idle(driver: MaaDriver, timeout_s: float = 30.0) -> bool:
     return False
 
 
-def wait_settle(driver: MaaDriver, timeout_s: float = 300.0) -> bool:
+def wait_settle(
+    driver: MaaDriver,
+    timeout_s: float = 300.0,
+    watchdog: BlockerSentry | None = None,
+) -> bool:
     """作战收尾：把游戏带回可操作状态（用 MAA 的 ``StartUp``）。
 
     链收尾 ≠ 作战结束（Copilot 任务链在作业动作执行完即返回），故需再推一次
     结算。交给 MAA 的 ``StartUp``：它会自己识别并处理结算画面、公告等弹窗，
     不依赖像素阈值（原做法是轮询蓝钮像素点屏幕，已废弃）。
+
+    ``watchdog``（2026-10-20 卡死自愈）：StartUp 不认识的阻断画面（判负
+    结算变体 / 同步弹窗等）由哨兵在等待循环里像素检出并点屏消解；
+    不传则行为与旧版完全一致。
 
     返回是否在超时内完成。**返回前会等到 MAA 完全空闲**（见 :func:`wait_idle`），
     以便调用方紧接着下发下一个任务（否则 `start()` 会因助手仍忙碌而秒失败）。
@@ -301,6 +393,8 @@ def wait_settle(driver: MaaDriver, timeout_s: float = 300.0) -> bool:
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
+        if watchdog is not None:
+            watchdog.poll()
         evts, mark = driver.events_since(mark)
         verdict = _terminal(evts)
         if verdict is not None:

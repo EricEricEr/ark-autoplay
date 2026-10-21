@@ -123,3 +123,37 @@ def test_validate_shots_dropped_black_is_optional_nonneg_int(tmp_path: Path) -> 
         with pytest.raises(ValueError):
             writer.write_episode(run_dir, ep_bad)
 
+
+def test_validate_battle_result_and_blockers(tmp_path: Path) -> None:
+    """新字段：battle_result 限枚举；blockers_dismissed 限 [{kind,t_ms,n}] 形态。"""
+    writer = EpisodeWriter(tmp_path)
+    run_dir = writer.begin("main_00-01", 1)
+    (run_dir / "shots" / "001_tick.png").write_bytes(b"\x89PNG-a")
+
+    ep = _fake_episode()
+    ep["battle_result"] = "lost"
+    ep["blockers_dismissed"] = [
+        {"kind": "settle_lost", "t_ms": 61234, "n": 1},
+        {"kind": "prts_level_low", "t_ms": 1234, "n": 1},
+    ]
+    written = json.loads(writer.write_episode(run_dir, ep).read_text(encoding="utf-8"))
+    assert written["battle_result"] == "lost"
+    assert written["blockers_dismissed"][0]["kind"] == "settle_lost"
+
+    for bad_result in ("victory", 1, True):
+        ep_bad = _fake_episode()
+        ep_bad["battle_result"] = bad_result
+        with pytest.raises(ValueError):
+            writer.write_episode(run_dir, ep_bad)
+
+    for bad_blockers in (
+        "settle_lost",
+        [{"kind": "settle_lost"}],  # 缺 t_ms/n
+        [{"kind": "settle_lost", "t_ms": "1", "n": 1}],
+        [{"kind": 1, "t_ms": 1, "n": 1}],
+    ):
+        ep_bad = _fake_episode()
+        ep_bad["blockers_dismissed"] = bad_blockers
+        with pytest.raises(ValueError):
+            writer.write_episode(run_dir, ep_bad)
+

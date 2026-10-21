@@ -1,0 +1,75 @@
+# 自监督预训练 pretrain_ssl v0（掩码实体建模，方案 §11 轨道 A 必做）
+#
+# 数据：processed 下的 imitation_v0.npz（38,526 局离线轨迹：grid/spawns + 编队 +
+#       动作序列，无战场状态）。编码器结构与 track_a policy/policy_v1 完全同形
+#       （256d/8头/4enc+2dec），学出的权重按键名+形状初始化下游。
+# 口径：
+# - 训练侧截断 limit_train=16000（4060 8G 单轮远低于 1~2h 封顶，实测量级见
+#   build/train report 的 elapsed_s）；holdout 恒为 v0 的三个留出家族全量
+#   （act33side / act27side / main_13，合计 2,206 局，评测抽前 64 个 batch）；
+# - 预训练指标只回答「掩码重构是否显著赢随机初始化与恒预测基线」，≠ 下游能力；
+# - 下游烟测：policy_v1 键级注入预训练权重，v2 npz 上 3 epoch，与 v2 自身
+#   前 3 epoch 历史并排（只出早期信号）。
+# 路径解析同 imitation_v1.yaml：一切路径以 ${ARK_ML_ROOT} 展开。
+
+experiment:
+  name: pretrain_ssl_v0
+  seed: 42
+  device: cuda
+
+data:
+  root: "${ARK_ML_ROOT}"
+  dataset_npz: "${ARK_ML_ROOT}/imitation_v0.npz"        # v0 已建数据集（38,526 局）
+  holdout_families: [act33side, act27side, main_13]      # 与 imitation_v0.yaml 一致
+
+model:                  # 必须与下游 policy_v1 同形，否则键级注入匹配不上
+  hidden_dim: 256
+  num_layers: 4
+  num_dec_layers: 2
+  num_heads: 8
+  dropout: 0.1
+
+pretrain:
+  epochs: 12
+  batch_size: 32
+  lr: 3.0e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  limit_train: 16000       # 训练侧截断（成本阀）；holdout 不截
+  holdout_eval_batches: 64 # holdout 评测只取前 N 个预 collate batch（固定）
+  mask_rate: 0.15
+  ratio_mask: 0.8          # 抽中实体 80% 换可学习 mask token
+  ratio_random: 0.1        # 10% 同组随机实体（残 10% 保留原样，见模块 docstring）
+  huber_delta: 1.0
+  # 分头损失权重（w_act_dir 与下游 v0/v2 保持同口径 0.5）
+  w_recon_cell: 1.0
+  w_recon_spawn: 1.0
+  w_cls_squad: 1.0
+  w_act_type: 1.0
+  w_act_target: 1.0
+  w_act_cell: 1.0
+  w_act_dir: 0.5
+
+downstream_smoke:
+  enabled: true
+  dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v2.npz"  # v2 已建数据集
+  holdout_stages:        # 与 v2 完全相同，保证对照口径
+    - main_04-01
+    - main_01-12
+    - main_02-02
+    - main_02-03
+  epochs: 3
+  batch_size: 16
+  lr: 3.0e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_train_batches: 64
+  w_type: 1.0
+  w_target: 1.0
+  w_cell: 1.0
+  w_dir: 0.5
+  ckpt_name: track_a_finetune_smoke.pt
+
+evaluation:
+  runs_dir: "${ARK_ML_ROOT}/runs"
+  report_tiers: [holdout]

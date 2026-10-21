@@ -7,6 +7,7 @@
     python -m ark_core.training.run_v1 all     --config configs/imitation_v2.yaml
     python -m ark_core.training.run_v1 kfold   --config configs/imitation_v3_kfold.yaml
     python -m ark_core.training.run_v1 audit_dir --config configs/imitation_v3_kfold.yaml
+    python -m ark_core.training.run_v1 pretrain --config configs/pretrain_ssl_v0.yaml
     python -m ark_core.training.run_v1 all     --config configs/imitation_v2.yaml \
         --increment-from ${ARK_ML_ROOT}/runs/imitation_v2
 
@@ -391,10 +392,98 @@ def _do_audit_dir(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
     return rep
 
 
+def _do_pretrain(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
+    """自监督预训练（掩码实体建模）+ 可选下游 3 epoch 微调烟测。"""
+    from .imitate import TrainConfig
+    from .pretrain_ssl import PretextConfig, finetune_smoke, pretrain
+
+    d = cfg["data"]
+    m = cfg.get("model", {})
+    p = cfg.get("pretrain", {})
+    pcfg = PretextConfig(
+        d_model=int(m.get("hidden_dim", 256)),
+        n_heads=int(m.get("num_heads", 8)),
+        n_layers=int(m.get("num_layers", 4)),
+        n_dec_layers=int(m.get("num_dec_layers", 2)),
+        dropout=float(m.get("dropout", 0.1)),
+        batch_size=int(p.get("batch_size", 32)),
+        lr=float(p.get("lr", 3e-4)),
+        weight_decay=float(p.get("weight_decay", 0.01)),
+        epochs=int(p.get("epochs", 12)),
+        grad_clip=float(p.get("grad_clip", 1.0)),
+        seed=int(cfg.get("experiment", {}).get("seed", 42)),
+        limit_train=int(p.get("limit_train", 16000)),
+        holdout_eval_batches=int(p.get("holdout_eval_batches", 64)),
+        mask_rate=float(p.get("mask_rate", 0.15)),
+        ratio_mask=float(p.get("ratio_mask", 0.8)),
+        ratio_random=float(p.get("ratio_random", 0.1)),
+        huber_delta=float(p.get("huber_delta", 1.0)),
+        w_recon_cell=float(p.get("w_recon_cell", 1.0)),
+        w_recon_spawn=float(p.get("w_recon_spawn", 1.0)),
+        w_cls_squad=float(p.get("w_cls_squad", 1.0)),
+        w_act_type=float(p.get("w_act_type", 1.0)),
+        w_act_target=float(p.get("w_act_target", 1.0)),
+        w_act_cell=float(p.get("w_act_cell", 1.0)),
+        w_act_dir=float(p.get("w_act_dir", 0.5)),
+    )
+    out_dir = _expand(cfg["evaluation"]["runs_dir"]) / str(
+        cfg.get("experiment", {}).get("name", "run")
+    )
+    device_str = str(cfg.get("experiment", {}).get("device", "cuda"))
+    result: dict[str, Any] = {}
+    rep = pretrain(
+        _expand(d["dataset_npz"]),
+        pcfg,
+        holdout_families={str(s) for s in (d.get("holdout_families") or [])},
+        out_dir=out_dir,
+        device_str=device_str,
+        log=log,
+    )
+    result["pretrain"] = rep
+    with (out_dir / "pretrain_report.json").open("w", encoding="utf-8") as f:
+        json.dump(rep, f, ensure_ascii=False, indent=2)
+    log(f"[pretrain] pretrain_report → {out_dir / 'pretrain_report.json'}")
+
+    s = cfg.get("downstream_smoke", {})
+    if s.get("enabled"):
+        scfg = TrainConfig(
+            d_model=int(m.get("hidden_dim", 256)),
+            n_heads=int(m.get("num_heads", 8)),
+            n_layers=int(m.get("num_layers", 4)),
+            n_dec_layers=int(m.get("num_dec_layers", 2)),
+            dropout=float(m.get("dropout", 0.1)),
+            batch_size=int(s.get("batch_size", 16)),
+            lr=float(s.get("lr", 3e-4)),
+            weight_decay=float(s.get("weight_decay", 0.01)),
+            epochs=int(s.get("epochs", 3)),
+            grad_clip=float(s.get("grad_clip", 1.0)),
+            seed=int(cfg.get("experiment", {}).get("seed", 42)),
+            w_type=float(s.get("w_type", 1.0)),
+            w_target=float(s.get("w_target", 1.0)),
+            w_cell=float(s.get("w_cell", 1.0)),
+            w_dir=float(s.get("w_dir", 0.5)),
+            eval_train_batches=int(s.get("eval_train_batches", 64)),
+        )
+        smoke = finetune_smoke(
+            Path(str(rep["checkpoint"])),
+            _expand(s["dataset_npz"]),
+            scfg,
+            holdout_stages={str(x) for x in (s.get("holdout_stages") or [])},
+            out_dir=out_dir / "finetune_smoke",
+            device_str=device_str,
+            log=log,
+        )
+        result["finetune_smoke"] = smoke
+        with (out_dir / "finetune_smoke_report.json").open("w", encoding="utf-8") as f:
+            json.dump(smoke, f, ensure_ascii=False, indent=2)
+        log(f"[smoke] finetune_smoke_report → {out_dir / 'finetune_smoke_report.json'}")
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口。"""
     p = argparse.ArgumentParser(prog="python -m ark_core.training.run_v1")
-    p.add_argument("step", choices=["build", "train", "all", "kfold", "audit_dir"])
+    p.add_argument("step", choices=["build", "train", "all", "kfold", "audit_dir", "pretrain"])
     p.add_argument(
         "--config",
         type=Path,
@@ -434,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
         result["kfold"] = _do_kfold(cfg, log)
     if args.step == "audit_dir":
         result["audit_dir"] = _do_audit_dir(cfg, log)
+    if args.step == "pretrain":
+        result["pretrain"] = _do_pretrain(cfg, log)
 
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

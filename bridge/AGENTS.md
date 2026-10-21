@@ -22,7 +22,8 @@ Arknights Autoplay 合并仓的 `bridge/` 子目录：**数据工厂 + 战场状
 │   ├── state_logger.py      # 作战期节拍截图（1.5s tick + 事件补拍，PNG 落盘）
 │   ├── replay_controller.py # 作业重放调度：领作业→进图→执行→结算推进→存盘
 │   ├── blocker_watchdog.py  # 卡死自愈看门狗：阻断画面像素检出（判负结算/等级过低横幅/
-│   │                        #   同步弹窗）+ 点屏消解 + episode 记账（blockers_dismissed /
+│   │                        #   同步弹窗）+ 战斗中剧情冻结停滞检测（story_freeze，文本区
+│   │                        #   连点）+ 点屏消解 + episode 记账（blockers_dismissed /
 │   │                        #   battle_result；单测全合成图，真实截图不入库）
 │   ├── episode_writer.py    # 轨迹写出（protocol_version 戳 + 截图校验哈希）
 │   ├── squad_builder.py     # 按作业阵容自动编队；阵容随机化变体生成（占位 stub）

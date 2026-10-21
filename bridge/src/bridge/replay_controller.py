@@ -394,6 +394,10 @@ class ReplayController:
             summary.update(ok=False, error="asst.start 失败")
             return summary
 
+        # 作战阶段开始：允许哨兵做剧情冻结停滞检测（主页/地图合法静滞期
+        # 绝不许触发连点；story_freeze 窗口从激活后起算）。
+        sentry.set_battle_active(True)
+
         # 作战过程：轮询事件流，CopilotAction 触发补拍
         cursor = mark
         terminal: str | None = None
@@ -475,6 +479,9 @@ class ReplayController:
         # （实测：episode 里明明有 TaskChainCompleted，却报"任务链收尾=None"）。
         fresh, cursor = self._driver.events_since(cursor)
         drain(fresh)
+        # 作战阶段结束：结算推进期改由画面型阻断器值守（settle_lost 等），
+        # 避免把"等待中的静止结算屏"误判成剧情冻结乱点。
+        sentry.set_battle_active(False)
 
         print(
             f"[job {job_id}] 任务链收尾={terminal} 动作事件={seen_actions}", flush=True

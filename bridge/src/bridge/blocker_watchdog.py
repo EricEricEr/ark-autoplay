@@ -15,6 +15,12 @@
    底部圆形 ✓ 按钮，圆心约 (960,980)，日更后首启常见）。
    **规格驱动**：暂无落盘样本，特征按形态描述设计并经全库零误报验证；
    消解 = 点 ✓ 按钮（点任意处可能不生效，故必须点按钮位）。
+4. ``story_freeze``：剧情节拍冻结（2026-10-21 新增，实测于 11 章 BOSS
+   战类剧情节拍关）——剧情把战斗**冻结**（击杀停跳、画面静滞、无按钮），
+   MAA 侧 StartUp@PRTS3 死循环重试 137+ 次无法识别；**不是**固定画面，
+   不能用像素特征直接认，改用**帧停滞检测**（战斗中帧差持续为 0）。
+   实测有效的人工处置 = 文本区 (600,500) 连点多下逐句顶掉剧情；
+   「跳过▶」确认弹窗的 ✓ 按钮在 150% DPI 下点不准，已放弃该路径。
 
 设计要点
 --------
@@ -22,7 +28,10 @@
   签名；不用 OCR、不引入模板图片素材（素材红线，阈值均为模块常量并注明来源）。
 - **二次命中才点屏**（双确认）：连续两轮（间隔 ≥1s）检出同一阻断器才执行
   消解动作，防止转场瞬间的单一帧误判把屏幕点到别处。
-- **每类阻断器有消解点预算**：同一 episode 内同类最多点
+- **story_freeze 走停滞检测而非画面特征**：滚动帧签名（灰度降采样网格）
+  相邻差 < 阈值且持续 ≥ ``FREEZE_MIN_S`` 秒才触发；20 秒的持续性本身就是
+  确认（比双确认更强的证据），触发后清空停滞计时。
+- **每类阻断器有点屏预算**：同一 episode 内同类最多点
   ``MAX_TAPS_PER_KIND`` 次，超出后只记不再点（防止检测误报时的无限点屏）。
 - **截图/点屏失败不打断主流程**：poll 内吞掉异常（与 state_logger.snap 同戒律）。
 
@@ -35,6 +44,7 @@ episode.json 的 ``blockers_dismissed``；结算段检出 ``settle_lost`` 供
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import numpy as np
@@ -60,7 +70,11 @@ BLOCKER_KINDS: tuple[str, str, str] = (
     BLOCKER_SETTLE_LOST,
     BLOCKER_SYNC_UPDATED,
 )
-"""看门狗首批支持的三类阻断画面 id。"""
+"""首批支持的三类**画面型**阻断器 id（有固定像素特征，走 detect_blocker）。"""
+
+BLOCKER_STORY_FREEZE = "story_freeze"
+"""剧情冻结 id：非画面型阻断（无固定特征可认），走哨兵停滞检测，
+不在 BLOCKER_KINDS/DISMISS_TAPS（消解动作是连点而非单点）。"""
 
 DISMISS_TAPS: dict[str, tuple[int, int]] = {
     # 红横幅弹窗：任意点可消解；点右下空旷区，远离中部可能叠出的二级弹窗。
@@ -136,6 +150,31 @@ _SYNC_DLG_TEXT_ZONE = (400, 480, 700, 1220)  # y1,y2,x1,x2
 _SYNC_DLG_WHITE_MIN = 0.02
 """对话框文字白色占比下限。"""
 
+# ---------------------------------------------------------------------------
+# story_freeze 停滞检测参数（来源：2026-10-21 对 ark-data 真实帧序列的差分统计）
+#   战斗帧相邻差分（1.5s tick，96x54 灰度网格）：τ=1.0 时最长静滞连跑仅 1~2 帧
+#   （main_01-05 / main_06-05 / camp_02 共 300+ 帧验证）；
+#   真冻结（弹窗/主页静滞）差分 ≈0 可持续整段。→ τ=1.0 + 20s 窗口安全。
+# ---------------------------------------------------------------------------
+
+FREEZE_DIFF_TAU = 1.0
+"""停滞判定的相邻帧签名差阈值（灰度 0-255 的均值绝对差）。"""
+
+FREEZE_MIN_S = 20.0
+"""持续静滞多少秒判 story_freeze（20s 持续性即确认，不需要画面特征）。"""
+
+FREEZE_TAP_XY = (600, 500)
+"""剧情文本区连点坐标（实测人工处置有效点位）。"""
+
+FREEZE_TAP_TIMES = 3
+"""单次消解连点次数（逐句顶掉剧情）。"""
+
+FREEZE_TAP_INTERVAL_S = 1.2
+"""连点间隔秒（给游戏两句剧情之间的切页时间）。"""
+
+_FREEZE_SIG_STEP = 20
+"""帧签名降采样步长（1920x1080 → 96x54 灰度网格，差分统计在此网格上标定）。"""
+
 
 def _zone(arr: np.ndarray, y1: int, y2: int, x1: int, x2: int) -> np.ndarray:
     return arr[y1:y2, x1:x2]
@@ -154,6 +193,14 @@ def _sync_masks() -> tuple[np.ndarray, np.ndarray]:
         _SYNC_MASK_CACHE["ring"] = (dist2 >= r1 * r1) & (dist2 <= r2 * r2)
         _SYNC_MASK_CACHE["inner"] = dist2 < 20 * 20
     return _SYNC_MASK_CACHE["ring"], _SYNC_MASK_CACHE["inner"]
+
+
+def _frame_signature(img: Any) -> np.ndarray:
+    """帧签名：灰度降采样网格（停滞检测用，PIL/numpy 输入均可）。"""
+    a = np.asarray(img)
+    if a.ndim == 3:
+        a = a[..., :3].mean(axis=2)
+    return a[::_FREEZE_SIG_STEP, ::_FREEZE_SIG_STEP].astype(np.float32)
 
 
 def detect_blocker(img: Any) -> str | None:
@@ -230,10 +277,14 @@ class BlockerSentry:
 
         sentry = BlockerSentry(driver, t0_wall_ms)
         ... 每个等待循环迭代里: sentry.poll()
+        ... 进入/离开战斗时: sentry.set_battle_active(True/False)
         episode["blockers_dismissed"] = sentry.events()
 
     ``t0_wall_ms`` 为 episode 起点墙钟毫秒，事件 ``t_ms`` 与之对齐
     （与 action_events.jsonl 同基准）。
+
+    停滞检测（story_freeze）只在 ``set_battle_active(True)`` 期间启用：
+    主页/关卡地图/编队界面的合法静滞（等人操作）绝不许触发连点。
     """
 
     def __init__(
@@ -243,27 +294,94 @@ class BlockerSentry:
         *,
         min_interval_s: float = 1.0,
         max_taps_per_kind: int = MAX_TAPS_PER_KIND,
+        freeze_min_s: float = FREEZE_MIN_S,
+        freeze_tap_interval_s: float = FREEZE_TAP_INTERVAL_S,
+        clock: Callable[[], float] | None = None,
     ) -> None:
-        """``driver`` 仅需 screencap/tap 两方法；轮询间隔默认 1s。"""
+        """``driver`` 仅需 screencap/tap 两方法；轮询间隔默认 1s。
+
+        ``freeze_min_s``/``freeze_tap_interval_s`` 暴露给测试调小；
+        ``clock`` 为单调时钟注入点（默认 time.monotonic，测试用假钟）。
+        """
         self._drv = driver
         self._t0 = t0_wall_ms
         self._min_interval = min_interval_s
         self._max_taps = max_taps_per_kind
+        self._freeze_min_s = freeze_min_s
+        self._freeze_tap_interval_s = freeze_tap_interval_s
+        self._clock = clock or time.monotonic
         self._events: list[dict[str, Any]] = []
         self._pending: str | None = None
         # -inf：保证实例化后的第一次 poll 总能真实截图（上线即查一次）
         self._last_poll = float("-inf")
         self._tap_count: dict[str, int] = {}
+        # 停滞滚动状态：上一帧签名 + 最近一次"有运动"的时刻
+        self._battle_active = False
+        self._last_sig: np.ndarray | None = None
+        self._still_since: float | None = None
         self.cap_failures = 0
         """截图异常次数（诊断用，只计数不抛出）。"""
+
+    def set_battle_active(self, active: bool) -> None:
+        """进入/离开战斗阶段（停滞检测开关）；切换时清空停滞滚动状态。"""
+        self._battle_active = active
+        self._last_sig = None
+        self._still_since = None
+
+    def _update_freeze(self, img: Any, now: float) -> None:
+        """更新停滞滚动状态（签名差 < 阈值视为"仍静滞"，否则重置计时）。"""
+        try:
+            sig = _frame_signature(img)
+        except Exception:  # noqa: BLE001  # 坏帧不更新也不中断
+            return
+        if self._last_sig is None or self._still_since is None:
+            self._last_sig = sig
+            self._still_since = now
+            return
+        diff = float(np.abs(sig - self._last_sig).mean())
+        self._last_sig = sig
+        if diff >= FREEZE_DIFF_TAU:
+            self._still_since = now
+
+    def _still_seconds(self, now: float) -> float:
+        return 0.0 if self._still_since is None else now - self._still_since
+
+    def _dismiss_freeze(self) -> str | None:
+        """story_freeze 消解：文本区连点 N 下逐句顶掉剧情，记账含停滞秒数。"""
+        used = self._tap_count.get(BLOCKER_STORY_FREEZE, 0)
+        if used >= self._max_taps:
+            return None
+        frozen_s = self._still_seconds(self._clock())
+        try:
+            for i in range(FREEZE_TAP_TIMES):
+                if i:
+                    time.sleep(self._freeze_tap_interval_s)
+                self._drv.tap(*FREEZE_TAP_XY)
+        except Exception:  # noqa: BLE001  # 点屏失败只跳过
+            return None
+        self._tap_count[BLOCKER_STORY_FREEZE] = used + 1
+        self._events.append(
+            {
+                "kind": BLOCKER_STORY_FREEZE,
+                "t_ms": int(time.time() * 1000) - self._t0,
+                "n": used + 1,
+                "frozen_s": round(frozen_s, 1),
+            }
+        )
+        # 消解后停滞状态清零：剧情文本翻动会产生帧差；若连点没顶动，
+        # 也需重新积满一个窗口再试（给消解动作留出起效时间）。
+        self._last_sig = None
+        self._still_since = None
+        return BLOCKER_STORY_FREEZE
 
     def poll(self) -> str | None:
         """过一遍看门狗；返回本轮执行了消解动作的阻断器 id（无则 None）。
 
         节流：距上次实际截图不足 ``min_interval_s`` 直接返回 None。
-        双确认：同一阻断器须**连续两轮**检出才点屏（防转场单帧误判）。
+        双确认：画面型阻断器须**连续两轮**检出才点屏（防转场单帧误判）。
+        story_freeze 以持续静滞秒数为证据（持续性即确认），一轮即可消解。
         """
-        now = time.monotonic()
+        now = self._clock()
         if now - self._last_poll < self._min_interval:
             return None
         self._last_poll = now
@@ -272,9 +390,13 @@ class BlockerSentry:
         except Exception:  # noqa: BLE001  # 截图失败不打断主流程，只计数
             self.cap_failures += 1
             return None
+        self._update_freeze(img, now)
         kind = detect_blocker(img)
         if kind is None:
             self._pending = None
+            # 画面型未命中 → 停滞检测（仅战斗中；主页/地图合法静滞不可触发）
+            if self._battle_active and self._still_seconds(now) >= self._freeze_min_s:
+                return self._dismiss_freeze()
             return None
         if self._pending != kind:
             self._pending = kind

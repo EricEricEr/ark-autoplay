@@ -15,8 +15,11 @@ from bridge.blocker_watchdog import (
     BLOCKER_KINDS,
     BLOCKER_PRTS_LEVEL_LOW,
     BLOCKER_SETTLE_LOST,
+    BLOCKER_STORY_FREEZE,
     BLOCKER_SYNC_UPDATED,
     DISMISS_TAPS,
+    FREEZE_TAP_TIMES,
+    FREEZE_TAP_XY,
     BlockerSentry,
     detect_blocker,
     resolve_battle_result,
@@ -266,3 +269,134 @@ def test_resolve_battle_result(
         lost_confirmed=lost, chain_completed=chain_ok, settled=settled
     )
     assert got == expect
+
+
+# ---------------------------------------------------------------------------
+# story_freeze 停滞检测（剧情冻结连点消解）
+# ---------------------------------------------------------------------------
+
+
+class _Clock:
+    """手动推进的假单调钟。"""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, s: float) -> None:
+        self.t += s
+
+
+def _still_frame() -> np.ndarray:
+    """静止帧（每次构造内容完全一致 → 帧差恒 0）。"""
+    return _canvas((40, 48, 58))
+
+
+def _moving_frame(i: int) -> np.ndarray:
+    """运动帧：顶部一条 200x200 亮块随 i 平移（帧差 >> 阈值 1.0）。
+
+    亮块固定在 y100-300 顶部条带，刻意避开所有画面型检测区
+    （判负左右白字区/同步对话框/✓ 圆环区），保证 detect_blocker 必为 None。
+    """
+    a = _canvas((40, 48, 58))
+    x = 100 + (i * 60) % 1500
+    a[100:300, x : x + 200] = (235, 235, 235)
+    return a
+
+
+def _freeze_sentry(
+    frames: list, clk: _Clock, **kw
+) -> tuple[BlockerSentry, _FakeDriver]:
+    drv = _FakeDriver(frames)
+    kw.setdefault("min_interval_s", 0.0)
+    kw.setdefault("freeze_tap_interval_s", 0.01)
+    kw.setdefault("clock", clk)
+    return BlockerSentry(drv, 1_000_000, **kw), drv
+
+
+def test_freeze_triggers_after_window_with_burst_taps() -> None:
+    """战斗中帧持续静滞满窗口 → 触发 story_freeze：连点 3 下文本区，事件含停滞秒数。"""
+    clk = _Clock()
+    sentry, drv = _freeze_sentry([_still_frame()], clk)
+    sentry.set_battle_active(True)
+    sentry.poll()  # t=0：建立签名/计时
+    clk.advance(12)
+    assert sentry.poll() is None  # t=12 < 20：未触发
+    clk.advance(9)
+    assert sentry.poll() == BLOCKER_STORY_FREEZE  # t=21 ≥ 20：触发
+    assert drv.taps == [FREEZE_TAP_XY] * FREEZE_TAP_TIMES
+    (event,) = sentry.events()
+    assert event["kind"] == BLOCKER_STORY_FREEZE
+    assert event["n"] == 1
+    assert event["frozen_s"] >= 20.0
+
+
+def test_freeze_not_triggered_when_frames_move() -> None:
+    """战斗中帧一直在动 → 永不触发（真战斗勿扰）。"""
+    clk = _Clock()
+    frames = [_moving_frame(i) for i in range(8)]
+    sentry, drv = _freeze_sentry(frames, clk)
+    sentry.set_battle_active(True)
+    for _ in frames:
+        assert sentry.poll() is None
+        clk.advance(10)  # 累计 70s 运动也不触发
+    assert drv.taps == []
+    assert sentry.events() == []
+
+
+def test_freeze_gated_by_battle_active() -> None:
+    """非战斗阶段（主页/地图合法静滞）同样序列绝不触发；
+    激活后窗口重新起算，积满才触发。"""
+    clk = _Clock()
+    sentry, drv = _freeze_sentry([_still_frame()], clk)
+    # 未激活：静滞 100s 也无事
+    for _ in range(10):
+        assert sentry.poll() is None
+        clk.advance(10)
+    assert drv.taps == []
+    # 激活后重新计窗口：+19s 不够，+2s 后满窗触发
+    sentry.set_battle_active(True)
+    sentry.poll()  # 激活后首帧重建签名/计时
+    clk.advance(19)
+    assert sentry.poll() is None
+    clk.advance(2)
+    assert sentry.poll() == BLOCKER_STORY_FREEZE
+    # 离开战斗：再次静滞 100s 也无事
+    sentry.set_battle_active(False)
+    for _ in range(10):
+        assert sentry.poll() is None
+        clk.advance(10)
+    assert len(sentry.events()) == 1
+
+
+def test_freeze_tap_budget_and_reset_after_dismiss() -> None:
+    """消解后停滞状态清零（下一个窗口重新积）；预算耗尽只记不点。"""
+    clk = _Clock()
+    sentry, drv = _freeze_sentry([_still_frame()], clk, max_taps_per_kind=1)
+    sentry.set_battle_active(True)
+    sentry.poll()
+    clk.advance(25)
+    assert sentry.poll() == BLOCKER_STORY_FREEZE
+    assert len(drv.taps) == FREEZE_TAP_TIMES
+    # 消解后立刻再来 10s：窗口被重置，不触发
+    clk.advance(10)
+    assert sentry.poll() is None
+    # 重新积满窗口：预算已用完 → 不点、不记新事件
+    clk.advance(25)
+    assert sentry.poll() is None
+    assert len(drv.taps) == FREEZE_TAP_TIMES
+    assert len(sentry.events()) == 1
+
+
+def test_freeze_screen_blocker_takes_precedence() -> None:
+    """静滞帧同时是画面型阻断屏（判负屏）→ 走画面型通道，不开冻结连点。"""
+    clk = _Clock()
+    sentry, drv = _freeze_sentry([lost_img()], clk)
+    sentry.set_battle_active(True)
+    assert sentry.poll() is None  # t=0：settle_lost 候选
+    clk.advance(25)  # 静滞已超窗口
+    assert sentry.poll() == BLOCKER_SETTLE_LOST  # 画面型双确认消解
+    assert [e["kind"] for e in sentry.events()] == [BLOCKER_SETTLE_LOST]
+    assert drv.taps == [DISMISS_TAPS[BLOCKER_SETTLE_LOST]]

@@ -102,6 +102,58 @@ def summarize_fold_metrics(fold_summaries: list[dict[str, Any]]) -> dict[str, di
     return out
 
 
+def _build_pretrained_snapshot(
+    npz_path: Path,
+    ckpt_path: Path,
+    arm_dir: Path,
+    cfg: TrainConfig,
+    log: Any,
+) -> tuple[Path, dict[str, Any]]:
+    """预训练 ckpt → 与下游 npz 同形模型的初始化快照（k 折共享一份）。
+
+    键级注入用 ``pretrain_ssl.load_pretrained_into``（词表不一致的 target 键
+    与 v1 新增的 state_proj 跳过，如实记入返回的明细 dict）。
+    """
+    import torch
+
+    from ..models.track_a.policy_v1 import TrackAPolicyV1
+    from .imitate_v1 import load_records_v1
+    from .imitation_data import MAX_SQUAD, Vocab
+    from .pretrain_ssl import load_pretrained_into
+
+    if not ckpt_path.is_file():
+        raise SystemExit(f"pretrain_ckpt 不存在: {ckpt_path}")
+    _records, featvec_np, vocab_tokens, state_dim = load_records_v1(npz_path)
+    vocab = Vocab(extra_tokens=vocab_tokens)
+    blob = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    model = TrackAPolicyV1(
+        featvec_dim=int(featvec_np.shape[1]),
+        vocab_size=vocab.size,
+        max_squad=MAX_SQUAD,
+        state_dim=state_dim,
+        d_model=cfg.d_model,
+        n_heads=cfg.n_heads,
+        n_layers=cfg.n_layers,
+        n_dec_layers=cfg.n_dec_layers,
+        dropout=cfg.dropout,
+    )
+    loaded, skipped = load_pretrained_into(model, blob["state_dict"])
+    arm_dir.mkdir(parents=True, exist_ok=True)
+    snap = arm_dir / "init_extended.pt"
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "source": str(ckpt_path),
+            "loaded_keys": loaded,
+            "skipped_keys": skipped,
+        },
+        snap,
+    )
+    log(f"[kfold] 预训练键级注入：加载 {loaded} 键 / 跳过 {len(skipped)} 键 "
+        f"{skipped} → {snap}")
+    return snap, {"loaded_keys": loaded, "skipped_keys": skipped, "snapshot": str(snap)}
+
+
 def run_kfold(
     npz_path: Path,
     cfg: TrainConfig,
@@ -119,6 +171,13 @@ def run_kfold(
     产物布局：``out_dir/<arm.name>/fold_<i>/{track_a_fold.pt, train_report.json}``；
     汇总由调用方写 ``out_dir/metrics_summary.json``。per-epoch 行日志被折叠
     （只保留折级摘要行），否则 k×arms×epochs 行级噪音淹没关键信息。
+
+    arm 的扩展键（对照实验用）：``pretrain_ckpt`` 指向预训练 ckpt（如
+    pretrain_ssl.pt）时，先用 ``load_pretrained_into`` 按**键名+形状**注入到
+    与下游 npz 同形的 TrackAPolicyV1（词表不一致的 target 键与 v1 新增的
+    state_proj 跳过，与 v3 已验证契约一致），快照存 ``out_dir/<arm.name>/
+    init_extended.pt``，各折 ``resume_from`` 该快照续训——k 折共享同一份初始
+    权重（与随机初始化臂同 seed 公平对照）。
     """
     from .imitate_v1 import load_records_v1  # 延迟导入，保持模块可被无 torch 环境加载文档
 
@@ -147,6 +206,12 @@ def run_kfold(
         w_dir = resolve_w_dir(mode, cfg.w_dir, w_dir_weighted)
         arm_cfg = replace(cfg, w_dir=w_dir)
         log(f"[kfold] === arm {arm_name}（dir_loss={mode}, w_dir={w_dir}）===")
+        resume: Path | None = None
+        injected: dict[str, Any] | None = None
+        if arm.get("pretrain_ckpt"):
+            resume, injected = _build_pretrained_snapshot(
+                npz_path, Path(str(arm["pretrain_ckpt"])), out_dir / arm_name, arm_cfg, log
+            )
         fold_reports: list[dict[str, Any]] = []
         for i, hold_stages in enumerate(folds):
             fold_dir = out_dir / arm_name / f"fold_{i}"
@@ -158,6 +223,7 @@ def run_kfold(
                 device_str=device_str,
                 log=fold_log,
                 ckpt_name="track_a_fold.pt",
+                resume_from=resume,
             )
             h = rep["best_holdout"]
             fold_reports.append(rep)
@@ -173,6 +239,8 @@ def run_kfold(
         result["arms"][arm_name] = {
             "dir_loss": mode,
             "w_dir": w_dir,
+            "pretrain_ckpt": str(arm.get("pretrain_ckpt") or ""),
+            "pretrain_injected": injected,
             "fold_metrics": [
                 {
                     "fold": i,

@@ -341,6 +341,10 @@ def _do_kfold(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
     k = int(k_cfg.get("k", 5))
     seed = int(k_cfg.get("seed", cfg.get("experiment", {}).get("seed", 42)))
     arms = k_cfg.get("arms") or [{"name": "full", "dir_loss": "full"}]
+    # arm 的 pretrain_ckpt 允许 ${VAR} 形式（机器路径不入库），此处展开成绝对路径
+    for _i, _a in enumerate(arms):
+        if _a.get("pretrain_ckpt"):
+            arms[_i] = {**_a, "pretrain_ckpt": str(_expand(str(_a["pretrain_ckpt"])))}
     out_dir = _expand(cfg["evaluation"]["runs_dir"]) / str(
         cfg.get("experiment", {}).get("name", "run")
     )
@@ -356,7 +360,7 @@ def _do_kfold(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
         log=log,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_summary = out_dir / "metrics_summary.json"
+    out_summary = out_dir / str(k_cfg.get("summary_out", "metrics_summary.json"))
     with out_summary.open("w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
     log(f"[kfold] metrics_summary → {out_summary}")

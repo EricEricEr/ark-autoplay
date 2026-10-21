@@ -1,0 +1,78 @@
+# SSL→下游完整对照实验 v4：K 折 5 折 × 预训练初始化臂（B 臂）
+#
+# 问题：**预训练对下游涨不涨，涨在哪**。
+# 协议：与 v3（configs/imitation_v3_kfold.yaml）的 5 折 full 臂**完全一致**——
+#   同 npz（v2 已建）、同 k=5、同 seed=42（make_folds 确定性保证折划分逐位相同）、
+#   同模型形状与超参族、同 dir_loss=full（w_dir=0.5）。
+# 臂 A（随机初始化）**不重训**：直接复用 runs/imitation_v3_kfold/full/ 的既有结果。
+# 臂 B（本配置唯一的 arm）：从 runs/pretrain_ssl_v0/pretrain_ssl.pt 键级注入
+#   （词表不一致的 hist_target/head_target 与 v1 新增的 state_proj 跳过，
+#   v3 已验证契约；k 折共享同一份初始化快照 init_extended.pt）。
+#
+# 产物：runs/imitation_v3_kfold/pretrained/fold_*/（experiment.name 复用
+#   imitation_v3_kfold 以与 A 臂同目录并排）；汇总单独落 metrics_summary_pretrained.json，
+#   不覆盖 v3 的 metrics_summary.json。
+# 用法：
+#   uv run python -u -m ark_core.training.run_v1 kfold --config configs/imitation_v4_pretrain_ft.yaml
+#
+# 诚实边界：~1.2k 对小样本；DIR 仅是记录指标（v3 审计结论：标签局部脏）；
+#   预训练高重构 ≠ 下游高能力。
+# 路径解析同 imitation_v1.yaml：一切路径以 ${ARK_ML_ROOT} 展开。
+
+experiment:
+  name: imitation_v3_kfold     # 与 v3 同目录：A 臂(full)/B 臂(pretrained) 并排
+  seed: 42
+  device: cuda
+
+data:
+  root: "${ARK_ML_ROOT}"
+  processed_dir: "${ARK_ML_ROOT}/processed"
+  episodes_root: "${ARK_ML_ROOT}/../ark-data/episodes"
+  dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v2.npz"  # 复用 v2 数据（同 v3）
+  vocab_top_k: 256
+  limit: null
+
+  # 与 v3 配置保持一致（本步只做 kfold，不 build；以下字段仅为口径齐全）
+  exclude_by_result: true
+  exclude_scan_file: "bridge/debug/scan_blockers_full.txt"
+  holdout_stages:
+    - main_04-01
+    - main_01-12
+    - main_02-02
+    - main_02-03
+  holdout_min_eps: 3
+  holdout_auto_n: 4
+
+kfold:
+  k: 5
+  seed: 42                 # 与 v3 相同 → 折划分逐位一致（公平对照的关键）
+  summary_out: metrics_summary_pretrained.json
+  arms:
+    - name: pretrained
+      dir_loss: full
+      pretrain_ckpt: "${ARK_ML_ROOT}/runs/pretrain_ssl_v0/pretrain_ssl.pt"
+
+model:                  # 与 v3/下游 policy_v1 同形
+  hidden_dim: 256
+  num_layers: 4
+  num_dec_layers: 2
+  num_heads: 8
+  dropout: 0.1
+
+training:
+  stage: imitate_v1
+  epochs: 20
+  batch_size: 16
+  lr: 3.0e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_train_batches: 64
+  w_type: 1.0
+  w_target: 1.0
+  w_cell: 1.0
+  w_dir: 0.5
+  dir_loss_weighted: 0.1
+
+evaluation:
+  runs_dir: "${ARK_ML_ROOT}/runs"
+  report_tiers: [holdout]

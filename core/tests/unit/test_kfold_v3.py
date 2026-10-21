@@ -186,3 +186,123 @@ def test_audit_dir_inconsistency_flag(tmp_path: Path) -> None:
     assert rep2["dirty"] is False
     assert rep2["d_prior"]["train"]["majority"] == "Up"
     assert rep2["d_prior"]["train"]["majority_acc"] == 1.0
+
+
+# ---------------------------------------------------------------- K 折 × 预训练注入臂（v4）
+
+
+def _tiny_v1_npz(tmp_path: Path) -> Path:
+    """构造 2 关 × 2 局的最小 v1 npz（供 kfold 冒烟；同 state_action_data 测试口径）。"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from ark_core.training.state_action_data import build_dataset
+
+    processed = tmp_path / "processed"
+    processed.mkdir(parents=True)
+    grid = []
+    for r in range(3):
+        for c in range(4):
+            grid.extend([r % 2, 1, 1, 0, 0])
+    pq.write_table(
+        pa.table(
+            {
+                "stage_id": ["main_99-01", "main_99-02"],
+                "rows": [3, 3],
+                "cols": [4, 4],
+                "grid": [grid, grid],
+                "spawns": [[], []],
+                "opt_initial_cost": [10, 10],
+            }
+        ),
+        processed / "stagefeat.parquet",
+    )
+    pq.write_table(
+        pa.table(
+            {
+                "char_id": ["char_103_angel", "char_222_bpipe"],
+                "name": ["能天使", "风笛"],
+                "rarity_tier": [6, 6],
+                "sub_profession": ["x", "y"],
+                "v0": [1.0, 0.0],
+                "v1": [0.0, 1.0],
+            }
+        ),
+        processed / "featvec_operators.parquet",
+    )
+    root = tmp_path / "episodes"
+    for stage in ("main_99-01", "main_99-02"):
+        for i in range(2):
+            name = f"job-t{i}-{stage[-2:]}-000001"
+            ed = root / stage / name
+            ed.mkdir(parents=True)
+            job_path = tmp_path / f"job_{stage}_{i}.json"
+            job_path.write_text(
+                json.dumps(
+                    {
+                        "stage_name": "9-1",
+                        "opers": [{"name": "能天使", "skill": 1}],
+                        "actions": [
+                            {"type": "SpeedUp"},
+                            {"type": "Deploy", "name": "能天使", "location": [1, 1],
+                             "direction": "Up"},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (ed / "episode.json").write_text(
+                json.dumps(
+                    {"episode_id": name, "stage_id": stage, "job_file": str(job_path)}
+                ),
+                encoding="utf-8",
+            )
+            (ed / "battle_states.jsonl").write_text("{}\n{}\n", encoding="utf-8")
+    npz = tmp_path / "ds.npz"
+    vocab, _stats, n = build_dataset(processed, root, out_path=npz, holdout_stages=set())
+    assert n == 4 and vocab.size == 1
+    return npz
+
+
+def test_kfold_pretrain_ckpt_arm(tmp_path: Path) -> None:
+    """pretrain_ckpt 臂：键级注入快照存在、target 键按契约跳过、2 折训练完成。"""
+    from ark_core.models.track_a.policy import SPAWN_IN
+    from ark_core.training.imitate import TrainConfig
+    from ark_core.training.kfold import run_kfold
+    from ark_core.training.pretrain_ssl import SSLMaskedPolicy
+
+    npz = _tiny_v1_npz(tmp_path)
+    ssl = SSLMaskedPolicy(
+        featvec_dim=2, vocab_size=5, max_squad=16, n_featvec_rows=2,
+        d_model=32, n_heads=4, n_layers=1, n_dec_layers=1, dropout=0.0,
+    )
+    ckpt = tmp_path / "ssl.pt"
+    torch.save({"state_dict": ssl.state_dict()}, ckpt)
+    assert SPAWN_IN == 4
+
+    cfg = TrainConfig(
+        d_model=32, n_heads=4, n_layers=1, n_dec_layers=1, dropout=0.0,
+        batch_size=2, epochs=1,
+    )
+    out = run_kfold(
+        npz,
+        cfg,
+        k=2,
+        seed=1,
+        out_dir=tmp_path / "run",
+        device_str="cpu",
+        arms=[{"name": "pt", "dir_loss": "full", "pretrain_ckpt": str(ckpt)}],
+        w_dir_weighted=0.1,
+        log=lambda *_: None,
+    )
+    arm = out["arms"]["pt"]
+    assert len(arm["fold_metrics"]) == 2
+    inj = arm["pretrain_injected"]
+    assert inj is not None and inj["loaded_keys"] > 0
+    # 词表 5 vs 1：target 相关键形不合必须跳过；state_proj（v1 新增）同样跳过
+    assert {"hist_target.weight", "head_target.weight", "head_target.bias",
+            "state_proj.weight", "state_proj.bias"} <= set(inj["skipped_keys"])
+    assert (tmp_path / "run" / "pt" / "init_extended.pt").is_file()
+    for i in range(2):
+        assert (tmp_path / "run" / "pt" / f"fold_{i}" / "track_a_fold.pt").is_file()

@@ -1,0 +1,73 @@
+# 状态-动作行为克隆 v2 实验配置（胜负口径清洗后重训）
+#
+# 与 v1 的唯一意图差异：**剔除判负/疑似阻断局**（动作学了但打输/弹窗卡死的轨迹
+# 不进训练集），其余口径与 v1 完全对齐（同模型结构、同超参族、同 holdout_stages），
+# 保证 v1/v2 并排可比。清洗规则与排除明细：
+#   见 src/ark_core/training/state_action_data.py 模块 docstring「胜负口径清洗」小节，
+#   以及 build 落盘的 runs/imitation_v2/build_report.json 的 excluded 字段。
+#
+# 诚实口径：清洗后仍是小样本（实测 ~1.4k 状态-动作对量级），本实验只验证
+# 「清洗 → 重训 → 指标」链路，**不作能力证据**。
+#
+# holdout_stages 与 v1 完全相同（红线，勿改，否则 v1/v2 不可比）；注意清洗后
+# holdout 池会缩水（判负局也被剔出 holdout——指标基于更干净的评测集，但
+# 与 v1 的逐值对比须把 holdout 成员变化纳入解读，见 train_report）。
+#
+# 路径解析同 imitation_v1.yaml：一切路径以 ${ARK_ML_ROOT} 展开；
+# exclude_scan_file 例外，它以**单仓根**（core 的上一级）为基的相对路径给出
+# （扫描清单在仓内 bridge/，机器绝对路径不入库）。
+
+experiment:
+  name: imitation_v2
+  seed: 42
+  device: cuda
+
+data:
+  root: "${ARK_ML_ROOT}"
+  processed_dir: "${ARK_ML_ROOT}/processed"
+  episodes_root: "${ARK_ML_ROOT}/../ark-data/episodes"   # 真机 episodes（只读）
+  dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v2.npz"
+  vocab_top_k: 256
+  limit: null            # 调试用：只取前 N 局（null = 全量）
+
+  # 胜负口径清洗（v2 核心）：字段侧 battle_result∈{lost,unknown} 剔除；
+  # 名单侧解析 bridge 的 blocker 扫描清单全部 HIT 行（含 broad sample 区段）。
+  # 两侧并集；明细进 build_report.excluded。置空/删除 = v1 行为。
+  exclude_by_result: true
+  exclude_scan_file: "bridge/debug/scan_blockers_full.txt"
+
+  # 关卡级留出：与 v1 完全相同（2026-10-19 扫描定选，build 侧复核计数）。
+  holdout_stages:
+    - main_04-01
+    - main_01-12
+    - main_02-02
+    - main_02-03
+  holdout_min_eps: 3     # holdout 关卡的有效局数下限（复核 + 自动选取共用）
+  holdout_auto_n: 4      # holdout_stages 为空时自动选取的关卡数
+
+model:
+  hidden_dim: 256
+  num_layers: 4
+  num_dec_layers: 2
+  num_heads: 8
+  dropout: 0.1
+
+training:
+  stage: imitate_v1
+  epochs: 20
+  batch_size: 16
+  ckpt_name: track_a_v2.pt   # 与 v1 的产物文件名区分（结构与超参族同 v1）
+  lr: 3.0e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_train_batches: 64   # train 档评测抽样（holdout 恒全量）
+  # 损失权重：cell/dir 只在 deploy 上计算（沿用 v0 imitate.compute_loss）
+  w_type: 1.0
+  w_target: 1.0
+  w_cell: 1.0
+  w_dir: 0.5
+
+evaluation:
+  runs_dir: "${ARK_ML_ROOT}/runs"
+  # 对外只报 holdout；train 档仅用于诊断过拟合
+  report_tiers: [holdout]

@@ -10,6 +10,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -27,8 +30,12 @@ from ark_core.training.imitation_data import MAX_SQUAD, Vocab  # noqa: E402
 from ark_core.training.state_action_data import (  # noqa: E402
     STATE_DIM,
     BuildStatsV1,
+    ExclusionInfo,
     base_stage_id,
+    build_dataset,
+    collect_exclusions,
     encode_episode,
+    parse_scan_blockers,
     state_vector,
 )
 
@@ -327,3 +334,172 @@ def test_collate_and_policy_v1_forward() -> None:
     loss.backward()
     grad = model.state_proj.weight.grad
     assert grad is not None and torch.isfinite(grad).all()
+
+
+# ---------------------------------------------------------------- 胜负口径清洗（v2）
+
+
+def test_parse_scan_blockers_hit_lines() -> None:
+    """HIT 行解析：抽 job 目录名与原因；非 HIT 行忽略；broad sample 区段也算。"""
+    content = """group                                            n  prts  lost  sync   none  skip
+4-7/job-22241-20261020-072148                   71     0     2     0     69     0
+   HIT job-22241-20261020-072148/072_tick.png:settle_lost {'kind': 'settle_lost'}
+   HIT job-22241-20261020-072148/073_settle.png:settle_lost {'kind': 'settle_lost'}
+   HIT job-55778-20261020-072643/064_settle.png:prts_level_low {'kind': 'prts_level_low'}
+valid main_01-05 job-23200                      79     0     0     0     79     0
+quarantine sample (50 eps)                     250     0     0     0    250     0
+broad sample                                   413     4    29     0    379     1
+   HIT job-21097-20261011-180350/031_settle.png:settle_lost {'kind': 'settle_lost'}
+   HIT job-99999-20260101-000000/001_tick.png:sync_updated {'kind': 'sync_updated'}
+"""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", suffix=".txt", delete=False
+    ) as f:
+        f.write(content)
+        path = Path(f.name)
+    hits = parse_scan_blockers(path)
+    path.unlink()
+    assert hits == {
+        "job-22241-20261020-072148": "settle_lost",      # 同 job 多帧去重
+        "job-55778-20261020-072643": "prts_level_low",
+        "job-21097-20261011-180350": "settle_lost",      # broad sample 区段
+        "job-99999-20260101-000000": "sync_updated",
+    }
+
+
+def _mk_episode_dir(root: Path, stage: str, name: str, meta: dict | None) -> Path:
+    """在合成 episodes 树下建一局（``meta=None`` 则是个空壳目录）。"""
+    ed = root / stage / name
+    ed.mkdir(parents=True)
+    if meta is not None:
+        (ed / "episode.json").write_text(
+            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+        )
+    return ed
+
+
+def test_collect_exclusions_field_side(tmp_path: Path) -> None:
+    """字段侧：lost/unknown 命中；win/无字段/坏 JSON 不命中；名单文件可缺席。"""
+    root = tmp_path / "episodes"
+    _mk_episode_dir(root, "main_01-01", "job-a", {"battle_result": "win"})
+    _mk_episode_dir(root, "main_01-01", "job-b", {"battle_result": "lost"})
+    _mk_episode_dir(root, "main_01-02", "job-c", {"battle_result": "unknown"})
+    _mk_episode_dir(root, "main_01-02", "job-d", {"stage_id": "main_01-02"})  # 老局无字段
+    bad = _mk_episode_dir(root, "main_01-03", "job-e", None)
+    (bad / "episode.json").write_text("{坏掉的", encoding="utf-8")
+    _mk_episode_dir(root, "tmp", "job-junk", {"battle_result": "lost"})  # 垃圾目录跳过
+
+    info = collect_exclusions(root, exclude_by_result=True, scan_file=None)
+    assert info.by_field == {"job-b": "lost", "job-c": "unknown"}
+    assert info.by_scan == {}
+    assert info.union() == {"job-b", "job-c"}
+
+    # 全关：不启用任何一侧 → 空排除集（v1 等价行为由 build_dataset 的 None 承担）
+    off = collect_exclusions(root, exclude_by_result=False, scan_file=None)
+    assert off.union() == set()
+
+
+def test_collect_exclusions_union_dedup(tmp_path: Path) -> None:
+    """名单/字段冲突以并集为准且去重；无 episode.json 的空壳局字段侧不出现。"""
+    root = tmp_path / "episodes"
+    _mk_episode_dir(root, "main_01-01", "job-both", {"battle_result": "lost"})
+    _mk_episode_dir(root, "main_01-01", "job-field-only", {"battle_result": "unknown"})
+    _mk_episode_dir(root, "main_01-01", "job-scan-only", {"battle_result": "win"})
+    scan = tmp_path / "scan.txt"
+    scan.write_text(
+        "   HIT job-both/058_settle.png:settle_lost {}\n"
+        "   HIT job-scan-only/031_settle.png:settle_lost {}\n",
+        encoding="utf-8",
+    )
+    info = collect_exclusions(root, exclude_by_result=True, scan_file=scan)
+    assert info.by_field == {"job-both": "lost", "job-field-only": "unknown"}
+    assert info.by_scan == {"job-both": "settle_lost", "job-scan-only": "settle_lost"}
+    assert info.union() == {"job-both", "job-field-only", "job-scan-only"}
+    assert len(info.union()) == 3  # job-both 双侧命中只算一次
+
+
+def _write_min_processed(processed: Path) -> None:
+    """写最小可用 stagefeat / featvec parquet（供 build_dataset 集成路径用）。"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    processed.mkdir(parents=True, exist_ok=True)
+    sf = pa.table(
+        {
+            "stage_id": ["main_99-01"],
+            "rows": [ROWS],
+            "cols": [COLS],
+            "grid": [_sf()["grid"]],
+            "spawns": [[]],
+            "opt_initial_cost": [10],
+        }
+    )
+    pq.write_table(sf, processed / "stagefeat.parquet")
+    fv = pa.table(
+        {
+            "char_id": ["char_103_angel", "char_222_bpipe"],
+            "name": ["能天使", "风笛"],
+            "rarity_tier": [6, 6],
+            "sub_profession": ["x", "y"],
+            "v0": [1.0, 0.0],
+            "v1": [0.0, 1.0],
+        }
+    )
+    pq.write_table(fv, processed / "featvec_operators.parquet")
+
+
+def _mk_real_episode(root: Path, stage: str, name: str, tmp_path: Path) -> None:
+    """建一语法完整的合成局（episode.json / battle_states.jsonl / 作业文件）。"""
+    job_path = tmp_path / f"job_{name}.json"
+    job_path.write_text(
+        json.dumps(
+            _job(
+                [
+                    {"type": "SpeedUp"},
+                    {"type": "Deploy", "name": "风笛", "location": [1, 1], "direction": "Up"},
+                ],
+                opers=["能天使", "风笛"],
+            ),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    ed = _mk_episode_dir(
+        root,
+        stage,
+        name,
+        {"episode_id": name, "stage_id": "main_99-01", "job_file": str(job_path)},
+    )
+    (ed / "battle_states.jsonl").write_text(
+        json.dumps(_bs(1.0)) + "\n" + json.dumps(_bs(2.0)) + "\n", encoding="utf-8"
+    )
+
+
+def test_build_dataset_applies_exclusion(tmp_path: Path) -> None:
+    """集成：排除集在 build 主循环生效且计数；``exclusion=None`` 时 v1 行为不回归。"""
+    root = tmp_path / "episodes"
+    processed = tmp_path / "processed"
+    _write_min_processed(processed)
+    _mk_real_episode(root, "main_99-01", "job-keep-20261020-000001", tmp_path)
+    _mk_real_episode(root, "main_99-01", "job-drop-20261020-000002", tmp_path)
+
+    excl = ExclusionInfo(by_scan={"job-drop-20261020-000002": "settle_lost"})
+    _vocab, stats, n = build_dataset(
+        processed,
+        root,
+        out_path=tmp_path / "v2.npz",
+        holdout_stages=set(),
+        exclusion=excl,
+    )
+    assert (n, stats.n_kept, stats.n_seen, stats.n_excluded) == (1, 1, 2, 1)
+
+    _vocab2, stats2, n2 = build_dataset(
+        processed,
+        root,
+        out_path=tmp_path / "v1.npz",
+        holdout_stages=set(),
+        exclusion=None,
+    )
+    assert (n2, stats2.n_kept, stats2.n_excluded) == (2, 2, 0)

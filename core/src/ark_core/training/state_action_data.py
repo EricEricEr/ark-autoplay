@@ -54,11 +54,25 @@ idx    名字                          定义
   （``[0]=UNK ｜ [1,1+vocab)=全局词表 ｜ 之后为编队槽位``）；
 - 动作类型映射：Deploy→deploy、Skill→skill、Retreat→retreat、SpeedUp→speed、
   BulletTime→bullet_time；其余（除 SkillDaemon 外）计 ``n_unknown_job_type``。
+
+胜负口径清洗（v2，可选）
+------------------------
+判负/阻断局混入会让「动作学了但输掉」的轨迹进训练集，v2 支持按双侧并集剔除
+（:func:`collect_exclusions` 产出、:func:`build_dataset` 的 ``exclusion`` 形参消费）：
+
+- **字段侧**：``episode.json.battle_result ∈ {lost, unknown}``（新代码局才有字段；
+  无字段 = 老局，交给名单侧）；
+- **名单侧**：bridge 的 blocker 扫描清单（``bridge/debug/scan_blockers_full.txt``）
+  HIT 行抽出的 job 目录名（settle_lost / prts_level_low / sync_updated）。
+
+按 episode 目录名（``job-<id>-<ts>``）匹配并集；词表与编码两路同步跳过。
+``exclusion=None`` 即 v1 行为，调用方不回归。
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -130,6 +144,85 @@ _COPILOT_ACTION_OF: dict[str, str] = {
 # episodes 根下非关卡数据的目录（数据工厂运行残留），扫描时跳过
 _SKIP_STAGE_DIRS: frozenset[str] = frozenset({"debug", "tmp"})
 
+EXCLUDE_BATTLE_RESULTS: frozenset[str] = frozenset({"lost", "unknown"})
+"""字段侧排除口径（v2 清洗）：``episode.json`` 的 ``battle_result`` 命中即剔；
+无字段 = 老局，交给名单侧。实测（2026-10-20，247 局）：lost 2、unknown 11、win 9，
+其余 225 局无字段。"""
+
+_SCAN_HIT_RE = re.compile(r"HIT\s+(\S+?)/\S+?:(\w+)")
+"""blocker 扫描清单的 HIT 行：``HIT <job目录>/<截图>:<原因>``（各区段的 HIT 都算）。"""
+
+SCAN_EXCLUDE_REASONS: frozenset[str] = frozenset(
+    {"settle_lost", "prts_level_low", "sync_updated"}
+)
+"""名单侧排除原因白名单（判负结算 / 等级过低横幅 / 同步弹窗）。清单里目前只出现
+前两类（2026-10-20 实测：37 行 HIT，去重后 33 个 job = settle_lost 29 +
+prts_level_low 4，sync_updated 0）；解析时不做白名单过滤——HIT 行本身就是
+阻断检出，全部计入并集，原因只用于报告分组。"""
+
+
+@dataclass
+class ExclusionInfo:
+    """v2 胜负口径清洗的双侧排除明细（键 = episode 目录名 ``job-<id>-<ts>``）。"""
+
+    by_field: dict[str, str] = field(default_factory=dict)
+    """字段侧：``battle_result ∈ EXCLUDE_BATTLE_RESULTS`` 的局 → 其字段值。"""
+    by_scan: dict[str, str] = field(default_factory=dict)
+    """名单侧：blocker 扫描清单 HIT 行抽出的 job 目录名 → 阻断原因。"""
+
+    def union(self) -> set[str]:
+        """双侧并集（冲突以并集为准，即任何一侧命中都剔）。"""
+        return set(self.by_field) | set(self.by_scan)
+
+
+def parse_scan_blockers(path: Path) -> dict[str, str]:
+    """解析 ``scan_blockers_full.txt`` 的全部 HIT 行 → {job 目录名: 阻断原因}。
+
+    行形如 ``   HIT job-22235-20261010-105743/058_settle.png:settle_lost {...}``；
+    非 HIT 行（表头 / 汇总 / 区段名）一律忽略；同一 job 多帧命中去重（取首个原因）。
+    """
+    hits: dict[str, str] = {}
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            m = _SCAN_HIT_RE.search(line)
+            if m:
+                hits.setdefault(m.group(1), m.group(2))
+    return hits
+
+
+def collect_exclusions(
+    episodes_root: Path,
+    *,
+    exclude_by_result: bool = True,
+    scan_file: Path | None = None,
+) -> ExclusionInfo:
+    """扫出 v2 清洗的双侧排除集。
+
+    - 字段侧：逐局读 ``episode.json`` 的 ``battle_result``（**包括缺
+      battle_states.jsonl 的局**——它们本就会被构建丢弃，但排除明细要如实呈现，
+      故扫描面按 episode.json 存在即算）；
+    - 名单侧：``scan_file`` 给定时解析全部 HIT 行（含 broad sample 区段）。
+    """
+    info = ExclusionInfo()
+    if exclude_by_result and episodes_root.is_dir():
+        for stage_dir in sorted(episodes_root.iterdir()):
+            if not stage_dir.is_dir() or stage_dir.name in _SKIP_STAGE_DIRS:
+                continue
+            for ep_dir in sorted(stage_dir.iterdir()):
+                meta_path = ep_dir / "episode.json"
+                if not (ep_dir.is_dir() and meta_path.is_file()):
+                    continue
+                try:
+                    meta = _read_json(meta_path)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                v = meta.get("battle_result")
+                if v is not None and str(v) in EXCLUDE_BATTLE_RESULTS:
+                    info.by_field[ep_dir.name] = str(v)
+    if scan_file is not None and scan_file.is_file():
+        info.by_scan = parse_scan_blockers(scan_file)
+    return info
+
 
 @dataclass
 class BuildStatsV1:
@@ -137,6 +230,8 @@ class BuildStatsV1:
 
     n_seen: int = 0
     n_kept: int = 0
+    n_excluded: int = 0
+    """v2 清洗剔除的局数（双侧并集 ∩ 有效局池；``exclusion=None`` 时恒 0，v1 不变）。"""
     drop_bad_files: int = 0
     drop_no_stage: int = 0
     drop_no_squad: int = 0
@@ -484,18 +579,24 @@ def build_dataset(
     holdout_stages: set[str],
     limit: int | None = None,
     vocab_top_k: int = 256,
+    exclusion: ExclusionInfo | None = None,
 ) -> tuple[Vocab, BuildStatsV1, int]:
     """构建状态-动作数据集并落盘 ``.npz``（一局一条 record，变长用 object 数组存）。
 
     ``holdout_stages``（基础关卡 id，``#f#`` 变体随基础关同侧）只决定**词表来源**
     与 build_report 的侧别统计：非干员目标词表只从训练侧构建，避免词表泄漏。
     train/holdout 的划分在训练侧按 ``holdout_stages`` 重算，不落进 record。
+
+    ``exclusion``（v2 清洗）：给定双侧排除集（见 :func:`collect_exclusions`）时，
+    命中并集的 episode（按目录名匹配）在**词表构建与编码两路都跳过**，计数进
+    ``stats.n_excluded``；``None`` = 不剔除（v1 默认行为，完全不回归）。
     """
     featvec_path = processed_dir / "featvec_operators.parquet"
     stagefeat = _load_stagefeat(processed_dir / "stagefeat.parquet")
     featvec_ids, featvec_mat = _load_featvec(featvec_path)
     featvec_idx = {cid: i for i, cid in enumerate(featvec_ids)}
     name2cid = _load_name_map(featvec_path)
+    excluded = exclusion.union() if exclusion is not None else frozenset()
 
     def _load_episode(ep_dir: Path) -> tuple[dict, dict, list, list] | None:
         """读一局的四个输入文件；任何一步失败返回 None（调用方计数）。"""
@@ -517,6 +618,8 @@ def build_dataset(
     n_train_side = 0
     n_hold_side = 0
     for _stage, ep_dir in iter_episode_dirs(episodes_root, limit):
+        if ep_dir.name in excluded:
+            continue  # v2 清洗：被剔局不得污染词表（与训练/编码同口径）
         loaded = _load_episode(ep_dir)
         if loaded is None:
             continue
@@ -538,6 +641,9 @@ def build_dataset(
     records: list[dict[str, Any]] = []
     for stage, ep_dir in iter_episode_dirs(episodes_root, limit):
         stats.n_seen += 1
+        if ep_dir.name in excluded:
+            stats.n_excluded += 1
+            continue
         loaded = _load_episode(ep_dir)
         if loaded is None:
             stats.drop_bad_files += 1

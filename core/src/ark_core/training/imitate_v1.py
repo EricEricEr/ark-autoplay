@@ -329,8 +329,13 @@ def train(
     out_dir: Path,
     device_str: str = "cuda",
     log: Any = print,
+    ckpt_name: str = "track_a_v1.pt",
 ) -> dict[str, Any]:
-    """训练主循环；按关卡切成 train / holdout 两档，输出常数基线并排对照。"""
+    """训练主循环；按关卡切成 train / holdout 两档，输出常数基线并排对照。
+
+    ``ckpt_name``：checkpoint 文件名（默认 track_a_v1.pt 保持 v1 产物路径不变；
+    v2 实验经配置显式给 track_a_v2.pt，避免产物混淆）。
+    """
     set_seed(cfg.seed)
     records, featvec, vocab_tokens, state_dim = load_records_v1(npz_path)
     vocab = Vocab(extra_tokens=vocab_tokens)
@@ -439,7 +444,7 @@ def train(
             log(f"    ↑ 新的最优 holdout（score={score:.4f}）")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt = out_dir / "track_a_v1.pt"
+    ckpt = out_dir / ckpt_name
     torch.save(
         {
             "state_dict": best_state if best_state is not None else model.state_dict(),

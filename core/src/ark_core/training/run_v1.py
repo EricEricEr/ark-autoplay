@@ -1,15 +1,19 @@
-"""状态-动作行为克隆 v1 CLI：构建数据集 / 训练 / 评测。
+"""状态-动作行为克隆 v1/v2 CLI：构建数据集 / 训练 / 评测。
 
 用法::
 
     python -m ark_core.training.run_v1 build   --config configs/imitation_v1.yaml
     python -m ark_core.training.run_v1 train   --config configs/imitation_v1.yaml
-    python -m ark_core.training.run_v1 all     --config configs/imitation_v1.yaml
+    python -m ark_core.training.run_v1 all     --config configs/imitation_v2.yaml
 
 与 v0 ``run`` 的差异：数据源是真机 episodes 目录树（非 episodes_v0.jsonl），
 留出为**关卡级**（``holdout_stages``），空列表时按确定性规则自动选取
 （见 ``state_action_data.choose_holdout_stages``，结果写入 build_report）。
-配置见 ``configs/imitation_v1.yaml``（一切超参入配置，禁止代码内魔法数字）。
+v2 增加胜负口径清洗：配置给 ``data.exclude_by_result`` / ``data.exclude_scan_file``
+时按双侧并集剔除判负/阻断局（详见 state_action_data 模块 docstring 的清洗小节，
+排除明细写入 build_report 的 ``excluded``）；不配则完全等同 v1 行为。
+配置见 ``configs/imitation_v1.yaml`` / ``configs/imitation_v2.yaml``（一切超参入
+配置，禁止代码内魔法数字）。
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import argparse
 import json
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -49,8 +54,37 @@ def _resolve_holdout_stages(
     return explicit
 
 
+def _collect_exclusion_from_cfg(
+    d: dict[str, Any], episodes_root: Path, log: Any
+) -> Any:
+    """按配置扫 v2 清洗排除集（未配置任一开关时返回 None = v1 行为）。"""
+    from .state_action_data import collect_exclusions
+
+    want_field = bool(d.get("exclude_by_result"))
+    scan_cfg = d.get("exclude_scan_file")
+    if not (want_field or scan_cfg):
+        return None
+    scan_path: Path | None = None
+    if scan_cfg:
+        # 相对路径以**单仓根**（core 的上一级）为基解析，机器绝对路径不入库
+        p = Path(str(scan_cfg))
+        if not p.is_absolute():
+            p = (_repo_root().parent / str(scan_cfg)).resolve()
+        if not p.is_file():
+            raise SystemExit(f"exclude_scan_file 不存在: {p}")
+        scan_path = p
+    excl = collect_exclusions(episodes_root, exclude_by_result=want_field, scan_file=scan_path)
+    log(
+        f"[build] 清洗排除：字段侧 {len(excl.by_field)} 局 "
+        f"{ {v: list(excl.by_field.values()).count(v) for v in set(excl.by_field.values())} }；"
+        f"名单侧 {len(excl.by_scan)} 局；并集 {len(excl.union())} 局"
+        + (f"（名单 {scan_path}）" if scan_path else "")
+    )
+    return excl
+
+
 def _do_build(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
-    """构建 v1 数据集（词表只从训练侧建；build_report 落盘）。"""
+    """构建 v1/v2 数据集（词表只从训练侧建；build_report 落盘）。"""
     from .state_action_data import build_dataset, scan_stage_counts
 
     d = cfg["data"]
@@ -64,6 +98,7 @@ def _do_build(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
     holdout = _resolve_holdout_stages(d, counts, log)
     log(f"[build] holdout 关卡 {len(holdout)} 个: {holdout}（局数 "
         f"{ {s: counts.get(s, 0) for s in holdout} }）")
+    exclusion = _collect_exclusion_from_cfg(d, episodes_root, log)
 
     vocab, stats, n = build_dataset(
         processed_dir=processed,
@@ -72,6 +107,7 @@ def _do_build(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
         holdout_stages=set(holdout),
         limit=d.get("limit"),
         vocab_top_k=int(d.get("vocab_top_k", 256)),
+        exclusion=exclusion,
     )
     rep = {
         "n_records": n,
@@ -97,6 +133,20 @@ def _do_build(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
             "unknown_job_type": stats.n_unknown_job_type,
             "align_check_mismatch": stats.n_align_check_mismatch,
         },
+        "excluded": (
+            {
+                "by_field": dict(sorted(exclusion.by_field.items())),
+                "by_scan": dict(sorted(exclusion.by_scan.items())),
+                "excluded_by_field": dict(
+                    sorted(Counter(exclusion.by_field.values()).items())
+                ),
+                "excluded_by_scan": len(exclusion.by_scan),
+                "union_n": len(exclusion.union()),
+                "applied_to_valid_pool": stats.n_excluded,
+            }
+            if exclusion is not None
+            else None
+        ),
         "n_actions_used": stats.n_actions_used,
         "type_hist": dict(stats.type_hist),
         "squad_name_unk": stats.n_squad_name_unk,
@@ -169,6 +219,7 @@ def _do_train(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
         out_dir=out_dir,
         device_str=str(cfg.get("experiment", {}).get("device", "cuda")),
         log=log,
+        ckpt_name=str(t.get("ckpt_name", "track_a_v1.pt")),
     )
     out_report = out_dir / "train_report.json"
     with out_report.open("w", encoding="utf-8") as f:

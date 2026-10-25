@@ -12,6 +12,7 @@ Arknights Autoplay 合并仓的 `bridge/` 子目录：**数据工厂 + 战场状
 1. **执行环境仅限 MuMu 模拟器**（1920×1080 / DPI 320 基线）；其他端一律不支持。
 2. **状态采集使用配套补丁 MaaCore**：上游 pin、完整补丁、重建方法见 `maacore/README.md` 与 `UPSTREAM.json`。已确认属于上游衍生作品、采用 AGPL-3.0；历史“附加条款待粘贴”结论已由 `NOTICE.md` 更正。普通官方 DLL 不能替代。
 3. 跨进程边界走版本化协议 / 落盘 JSON（为解耦与可复现性，**不再**是许可证隔离要求——全项目已统一 AGPL-3.0，见 `../core/docs/adr/0004-unify-agpl-monorepo.md`）。
+4. **采集者默认禁止源石补理智**：`resource_policy.allow_originite` 缺项等同 false。只有该账号所有者明确同意才能在本地配置开放；维护者本机自抽号的既有授权单独保留，不推广到他人。共享模板保持禁止，不购买新源石或充值。
 
 ## 目录布局
 

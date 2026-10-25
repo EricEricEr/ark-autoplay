@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from bridge.navigator import briefing_blue_ok
+from bridge.resource_policy import protect_task_params
 
 if TYPE_CHECKING:
     from bridge.blocker_watchdog import BlockerSentry
@@ -154,16 +155,16 @@ class CopilotRunner:
 
 
 def safe_copilot_params(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Copilot 的安全参数（禁自动嗑药/碎石；不上报第三方）。
+    """默认关闭自动补给，且 extra 不能绕过采集者的源石禁用策略。
 
     ``use_sanity_potion`` 保持 False：不自动使用理智药。
-    碎石的开关不在此（Copilot 由 ``medicine``/``stone`` 无关参数控制），
-    但数据工厂侧仍禁止任何付费资源消耗。
+    Copilot 不提供石头补给次数接口；stone 不能当作给它开启碎石的参数。
+    此辅助函数没有账号授权上下文，始终拒绝非零 stone。
     """
     p: dict[str, Any] = {"use_sanity_potion": False}
     if extra:
         p.update(extra)
-    return p
+    return protect_task_params("Copilot", p)
 
 
 # 剿灭列表条目在 1920x1080 下的点击 y 坐标（2026-10-13 截图 OCR 实测；
@@ -294,7 +295,10 @@ def navigate_only(
     if str(stage_code).startswith("camp_"):
         tid = 0
     else:
-        tid = driver.append_task("Fight", {"stage": stage_code, "nav_only": True})
+        tid = driver.append_task(
+            "Fight",
+            protect_task_params("Fight", {"stage": stage_code, "nav_only": True}),
+        )
     if not tid and str(stage_code).startswith("camp_"):
         # 剿灭兜底（2026-10-13 实测）：StageNavigationTask::set_stage_name 只认
         # 「同名 task」或主线正则（字母0-3位 + 数字-数字），camp_01/02/03 两者都
@@ -302,7 +306,10 @@ def navigate_only(
         # Annihilation 是被接受的（MaaCore 源码注释：内部标识与显示代号不一致的
         # 关卡，如剿灭 Annihilation），nav_only 下 MAA 会把游戏导航到剿灭作战
         # 地图；之后由 Copilot 自带的 navigate_to_stage 在地图内滑到具体剿灭关卡。
-        tid = driver.append_task("Fight", {"stage": "Annihilation", "nav_only": True})
+        tid = driver.append_task(
+            "Fight",
+            protect_task_params("Fight", {"stage": "Annihilation", "nav_only": True}),
+        )
         camp_fallback = bool(tid)
     if not tid:
         raise NavigationError(

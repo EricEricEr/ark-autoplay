@@ -52,6 +52,8 @@ MuMu模拟器 ──截图──► bridge(数据工厂) ──版本化协议�
 
 只采集需要 Windows 10/11 x64、MuMu（1920×1080 / DPI 320）、Python 3.12 + uv，以及 [配套补丁 MAA 运行时](bridge/maacore/README.md)。本地转换也无需训练用 torch/GPU 或模型权重。
 
+采集者默认 **禁止源石补理智**（`resource_policy.allow_originite: false`，缺项也禁止）；维护者本机自抽号的授权单独保留，不随模板分发。理智不足时暂停，按该账号所有者的明确授权处理。
+
 ```powershell
 git clone https://github.com/EricEricEr/ark-autoplay.git
 cd ark-autoplay/bridge

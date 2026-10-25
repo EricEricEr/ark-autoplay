@@ -38,6 +38,8 @@ uv run ruff check
 
 练度优先使用 [森空岛扫码入口](tools/skland/README.md)；Node.js 18+，无 npm 依赖。不能扫码的账号才使用 OperBox 并补充技能/模组资料。
 
+采集者默认禁止源石补理智，缺少 `resource_policy.allow_originite` 时也视为 false；非零源石任务参数在调用 MAA 前被拒绝。维护者自抽号的单独授权不进入公共模板。理智不足时暂停处理，自动吃药保持原有关闭默认值。
+
 ## 数据与许可
 
 原始采集每局保存 `episode.json`、`battle_states.jsonl`、`action_events.jsonl`、`shots/`。原始作业在数据根的 `tmp/maa_jobs/`，交接须一并带回；本地转换包将作业内置为 `job.json`。当前结构化训练不读取视频/截图，画面原件留在采集者本地，按需补交复核帧。`ok=true` / `fail_stage=done` 表示流程完成，不能单独作为通关证明。

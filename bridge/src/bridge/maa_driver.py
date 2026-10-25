@@ -45,6 +45,8 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from bridge.resource_policy import originite_allowed, protect_task_params
+
 if TYPE_CHECKING:
     from PIL import Image
 
@@ -91,6 +93,7 @@ def load_instance_config(path: str | Path) -> dict[str, Any]:
     for key in ("adb_path", "adb_host", "adb_port", "maa_dir", "resolution"):
         if key not in cfg:
             raise ValueError(f"实例配置缺少字段 {key}: {path}")
+    originite_allowed(cfg)  # 在连接 DLL/游戏之前拒绝含糊的资源授权值。
     return cfg
 
 
@@ -227,6 +230,7 @@ class MaaDriver:
     def __init__(self, instance_cfg: dict[str, Any], user_dir: str | Path) -> None:
         """以实例配置初始化；``user_dir`` 为 MAA 运行数据落盘目录。"""
         self._cfg = instance_cfg
+        self._allow_originite = originite_allowed(instance_cfg)
         self._adb = str(instance_cfg["adb_path"])
         self._addr = f"{instance_cfg['adb_host']}:{instance_cfg['adb_port']}"
         ctx = _load_asst(str(instance_cfg["maa_dir"]), str(user_dir))
@@ -334,7 +338,11 @@ class MaaDriver:
         """
         if self._asst is None:
             raise RuntimeError("尚未 connect")
-        return int(self._asst.append_task(task_type, params or {}))
+        safe = protect_task_params(
+            task_type, params,
+            allow_originite=getattr(self, "_allow_originite", False),
+        )
+        return int(self._asst.append_task(task_type, safe))
 
     def append_copilot(
         self, job_path: str | Path, formation: bool = True, support_unit_usage: int = 0
@@ -349,7 +357,7 @@ class MaaDriver:
         if self._asst is None:
             raise RuntimeError("尚未 connect")
         return int(
-            self._asst.append_task(
+            self.append_task(
                 "Copilot",
                 {
                     "filename": str(job_path),
@@ -368,7 +376,10 @@ class MaaDriver:
         """
         if self._asst is None:
             raise RuntimeError("尚未 connect")
-        return bool(self._asst.set_task_params(int(task_id), params))
+        safe = protect_task_params(
+            "", params, allow_originite=getattr(self, "_allow_originite", False),
+        )
+        return bool(self._asst.set_task_params(int(task_id), safe))
 
     def start(self) -> bool:
         """开始执行已下发的任务队列。"""

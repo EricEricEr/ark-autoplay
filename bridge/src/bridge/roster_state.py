@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """名册统一入口（RosterState）——练度数据双通道 + 部署掩码。
 
 用户决策（2026-10-11）：练度读取进最终模型分两种情况——
@@ -13,9 +12,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 PRECEDENCE = {"operbox": 1, "skland": 2, "user_confirmed": 3}
 
@@ -32,7 +32,9 @@ class RosterOp:
     skill_verified: bool = False        # skill_level 是否来自可信源（skland/user）
     extra: dict[str, Any] = field(default_factory=dict)
 
-    def meets(self, elite: int = 0, level: int = 0, skill_level: int = 0) -> tuple[bool, list[str]]:
+    def meets(
+        self, elite: int = 0, level: int = 0, skill_level: int = 0
+    ) -> tuple[bool, list[str]]:
         """返回 (是否满足, 不满足原因列表)。skill_level=0 表示作业无技能要求。"""
         reasons: list[str] = []
         if self.elite < elite:
@@ -54,10 +56,13 @@ class RosterState:
 
     def merge_in(self, op: RosterOp) -> None:
         cur = self.ops.get(op.name)
-        if cur is None or PRECEDENCE.get(op.provenance, 0) >= PRECEDENCE.get(cur.provenance, 0):
+        newer = PRECEDENCE.get(op.provenance, 0)
+        if cur is None or newer >= PRECEDENCE.get(cur.provenance, 0):
             self.ops[op.name] = op
 
-    def deployment_mask(self, lineup: Iterable[dict[str, Any]], allow_support: int = 0) -> list[dict[str, Any]]:
+    def deployment_mask(
+        self, lineup: Iterable[dict[str, Any]], allow_support: int = 0
+    ) -> list[dict[str, Any]]:
         """对一组 lineup 条目逐个输出部署可用性。
 
         lineup 条目形如 {"name": ..., "req": {"elite","level","skill_level", ...}}
@@ -75,14 +80,20 @@ class RosterState:
             op = self.ops.get(name)
             if op is None:
                 missing += 1
-                rows.append({"name": name, "own": False, "deployable": False, "reasons": ["missing"],
-                             "own_state": None, "required": {"elite": re_, "level": rl, "skill_level": sl}})
+                rows.append({"name": name, "own": False, "deployable": False,
+                             "reasons": ["missing"], "own_state": None,
+                             "required": {"elite": re_, "level": rl,
+                                          "skill_level": sl}})
                 continue
             ok, reasons = op.meets(re_, rl, sl)
-            skill_ver = op.skill_verified or (sl == 0) or op.skill_level is not None
-            rows.append({"name": name, "own": True, "deployable": ok, "reasons": reasons,
+            _skill_ver = op.skill_verified or (sl == 0) or (
+                op.skill_level is not None
+            )
+            rows.append({"name": name, "own": True, "deployable": ok,
+                         "reasons": reasons,
                          "skill_verified": bool(op.skill_level is not None),
-                         "own_state": {"elite": op.elite, "level": op.level, "skill_level": op.skill_level,
+                         "own_state": {"elite": op.elite, "level": op.level,
+                                       "skill_level": op.skill_level,
                                        "provenance": op.provenance},
                          "required": {"elite": re_, "level": rl, "skill_level": sl}})
         for row in rows:
@@ -94,8 +105,13 @@ class RosterState:
     def to_json(self) -> dict[str, Any]:
         return {"schema": "roster_state/1.0",
                 "n_own": len(self.ops),
-                "provenance_counts": {p: sum(1 for o in self.ops.values() if o.provenance == p) for p in PRECEDENCE},
-                "own_opers": [asdict(o) for o in sorted(self.ops.values(), key=lambda x: x.name)]}
+                "provenance_counts": {
+                    p: sum(1 for o in self.ops.values() if o.provenance == p)
+                    for p in PRECEDENCE
+                },
+                "own_opers": [
+                    asdict(o) for o in sorted(self.ops.values(), key=lambda x: x.name)
+                ]}
 
 
 # ---------- 通道装载 ----------
@@ -108,8 +124,10 @@ def load_operbox(path: Path) -> list[RosterOp]:
         if not o.get("own", True):
             continue
         out.append(RosterOp(
-            name=str(o["name"]), elite=int(o.get("elite") or 0), level=int(o.get("level") or 0),
-            potential=int(o.get("potential") or 0), skill_level=None, main_skill_lvl=None,
+            name=str(o["name"]), elite=int(o.get("elite") or 0),
+            level=int(o.get("level") or 0),
+            potential=int(o.get("potential") or 0), skill_level=None,
+            main_skill_lvl=None,
             provenance="operbox", skill_verified=False))
     return out
 
@@ -117,7 +135,8 @@ def load_operbox(path: Path) -> list[RosterOp]:
 def _skland_skill(o: dict[str, Any]) -> tuple[int | None, int | None]:
     """skland skillLvl(0..9) & mainSkillLvl -> 数据集口径 skill_level(None 若全未知)。
     规则（与 data-validation/roster_analysis_v2.py 一致）：
-      raw<=6 -> raw；raw>=7 且 main>=7 -> raw+1（专一8/专二9/专三10）；raw==7 且 main<7 -> 7。
+      raw<=6 -> raw；raw>=7 且 main>=7 -> raw+1（专一8/专二9/专三10）；
+      raw==7 且 main<7 -> 7。
     诚实边界：普通7 与 专一7 无法二值化时按普通7。
     """
     raw = o.get("skillLvl")
@@ -138,8 +157,10 @@ def load_skland(path: Path) -> list[RosterOp]:
     for o in (j.get("ops") or []):
         sk, main = _skland_skill(o)
         out.append(RosterOp(
-            name=str(o["name"]), elite=int(o.get("elite") or 0), level=int(o.get("level") or 0),
-            potential=int(o.get("potential") or 0), skill_level=sk, main_skill_lvl=main,
+            name=str(o["name"]), elite=int(o.get("elite") or 0),
+            level=int(o.get("level") or 0),
+            potential=int(o.get("potential") or 0), skill_level=sk,
+            main_skill_lvl=main,
             provenance="skland", skill_verified=sk is not None))
     return out
 
@@ -152,10 +173,12 @@ def load_overrides(path: Path) -> list[RosterOp]:
     out = []
     for name, p in (j.get("ops") or {}).items():
         out.append(RosterOp(
-            name=str(name), elite=int(p.get("elite") or 0), level=int(p.get("level") or 0),
+            name=str(name), elite=int(p.get("elite") or 0),
+            level=int(p.get("level") or 0),
             potential=int(p.get("potential") or 0),
             skill_level=p.get("skill_level"), main_skill_lvl=p.get("mainSkillLvl"),
-            provenance="user_confirmed", skill_verified=p.get("skill_level") is not None,
+            provenance="user_confirmed",
+            skill_verified=p.get("skill_level") is not None,
             extra={"note": p.get("note", "")}))
     return out
 
@@ -171,21 +194,47 @@ def build_state(*, operbox: Path | None = None, skland: Path | None = None,
             st.merge_in(o)
     if overrides and overrides.is_file():
         for o in load_overrides(overrides):
-            # 覆盖层只允许覆盖已有字段，不应将技能字段从 None 变为未知——直接整表替换
-            st.merge_in(o)
+            # 逐字段合并（2026-10-25 修）：覆盖层常为「只给技能字段」的部分覆盖
+            # （user_overrides 的 note 明确「精级/等级请用 OperBox 新值」），
+            # 整行替换会把没给的 elite/level/potential 清零。约定：
+            # 覆盖层数值字段为 0 视为「未提供」（实读不为 0），技能字段 None 同理。
+            cur = st.ops.get(o.name)
+            if cur is None:
+                st.ops[o.name] = o
+                continue
+            if o.elite:
+                cur.elite = o.elite
+            if o.level:
+                cur.level = o.level
+            if o.potential:
+                cur.potential = o.potential
+            if o.skill_level is not None:
+                cur.skill_level = o.skill_level
+            if o.main_skill_lvl is not None:
+                cur.main_skill_lvl = o.main_skill_lvl
+            if o.extra:
+                cur.extra.update(o.extra)
+            cur.provenance = f"user_confirmed+{cur.provenance}"
+            cur.skill_verified = cur.skill_verified or (cur.skill_level is not None)
     return st
 
 
 # ---------- CLI ----------
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="名册统一入口：双通道装载 + 合并 + （可选）部署掩码试算")
-    ap.add_argument("--operbox", type=Path, default=None, help="MAA OperBox JSON（通道 B）")
-    ap.add_argument("--skland", type=Path, default=None, help="森空岛 roster_skland.json（通道 A）")
-    ap.add_argument("--overrides", type=Path, default=None, help="user_overrides.json（最高优先级）")
+    ap = argparse.ArgumentParser(
+        description="名册统一入口：双通道装载 + 合并 + （可选）部署掩码试算"
+    )
+    ap.add_argument("--operbox", type=Path, default=None,
+                    help="MAA OperBox JSON（通道 B）")
+    ap.add_argument("--skland", type=Path, default=None,
+                    help="森空岛 roster_skland.json（通道 A）")
+    ap.add_argument("--overrides", type=Path, default=None,
+                    help="user_overrides.json（最高优先级）")
     ap.add_argument("--out", type=Path, default=None, help="合并名册输出 JSON")
     ap.add_argument("--mask-demo", type=Path, default=None,
-                    help="（可选）对一个 copilot.jsonl 的前 N 条作业计算部署掩码并打印摘要")
+                    help="（可选）对一个 copilot.jsonl 的前 N 条作业"
+                         "计算部署掩码并打印摘要")
     ap.add_argument("--mask-n", type=int, default=5)
     args = ap.parse_args(argv)
 
@@ -193,7 +242,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"merged {len(st.ops)} ops: {st.to_json()['provenance_counts']}")
 
     if args.out:
-        args.out.write_text(json.dumps(st.to_json(), ensure_ascii=False, indent=1), encoding="utf-8")
+        args.out.write_text(
+            json.dumps(st.to_json(), ensure_ascii=False, indent=1), encoding="utf-8"
+        )
         print(f"written -> {args.out}")
 
     if args.mask_demo and args.mask_demo.is_file():
@@ -207,8 +258,13 @@ def main(argv: list[str] | None = None) -> int:
             ok = sum(1 for r in rows if r["deployable"] or r.get("support_ok"))
             n += 1
             if n <= args.mask_n:
-                bad = [f"{r['name']}<{','.join(r['reasons'])}>" for r in rows if not r["deployable"] and not r.get("support_ok")]
-                print(f"[{rec.get('id')}] {ok}/{len(rows)} deployable; blocks: {'; '.join(bad[:3]) or '-'}")
+                bad = [
+                    f"{r['name']}<{','.join(r['reasons'])}>"
+                    for r in rows
+                    if not r["deployable"] and not r.get("support_ok")
+                ]
+                print(f"[{rec.get('id')}] {ok}/{len(rows)} deployable; "
+                      f"blocks: {'; '.join(bad[:3]) or '-'}")
     return 0
 
 

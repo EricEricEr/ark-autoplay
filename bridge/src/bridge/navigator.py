@@ -26,9 +26,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import yaml
-from PIL import Image
 
 if TYPE_CHECKING:
+    from PIL import Image
+
     from bridge.maa_driver import MaaDriver
 
 
@@ -57,6 +58,9 @@ def briefing_blue_ok(img: Any, region: list[int], threshold: float = 0.25) -> bo
     输入 PIL Image 或 numpy RGB 数组（内部统一转 PIL 走既有判定式）；
     区域越界/异常帧自然落到不通过（fail-closed，宁判导航失败不放假成功）。
     """
+    # PIL 惰性导入：像素判定才需要它（core venv 无 Pillow 也可 import 本模块）
+    from PIL import Image  # noqa: PLC0415
+
     if not isinstance(img, Image.Image):
         arr = np.asarray(img)
         if arr.ndim != 3 or arr.shape[2] < 3:

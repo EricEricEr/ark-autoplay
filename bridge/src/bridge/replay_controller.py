@@ -327,27 +327,9 @@ class ReplayController:
         # 要求从已知界面起步；上一局结束后游戏可能停在结算/地图/任意界面，
         # 直接 nav_only 会让 `StageBegin` 立即 SubTaskError、整批全灭
         # （实测 20 局批量 ok 0/20，每局仅 6 秒即失败）。
-        if not wait_settle(
-            self._driver, timeout_s=_SETTLE_TIMEOUT_S, watchdog=sentry
-        ):
-            # 实测（2026-10-10 批量）：收尾瞬间的弹窗/非主页态会让 StartUp 链偶发失败，
-            # 而**紧接重试往往 8 秒内即成功**。故这里做有界重试，避免把可恢复的局
-            # 直接记成 pre 失败（v6 批量里这类损失占 3/20）。
-            recovered = False
-            for attempt in (1, 2):
-                if wait_idle(self._driver, timeout_s=20.0) and wait_settle(
-                    self._driver, timeout_s=_SETTLE_TIMEOUT_S, watchdog=sentry
-                ):
-                    recovered = True
-                    print(
-                        f"[job {job_id}] 前置回主页第 {attempt} 次重试成功", flush=True
-                    )
-                    break
-                print(f"[job {job_id}] 前置回主页重试 {attempt} 仍失败", flush=True)
-            if not recovered:
-                print(f"[job {job_id}] 前置回主页失败（StartUp）", flush=True)
-                summary.update(ok=False, error="pre: StartUp 失败（已重试 2 次）")
-                return summary
+        if not ensure_home(self._driver, sentry, log_prefix=f"[job {job_id}]"):
+            summary.update(ok=False, error="pre: StartUp 失败（已重试 2 次）")
+            return summary
 
         # 2026-10-10：预导航（Fight nav_only）是**唯一**能导航到关卡准备界面的路径——
         # 实测去掉它后 Copilot 链直接 StartUp→BattleStartAll 不导航（卡在章节地图）。
@@ -649,6 +631,35 @@ class ReplayController:
         ep_dir = self._work / "episodes" / entry["source"]["stage_id_raw"]
         marker = f"job-{entry['source']['job_id']}-"
         return has_completed_episode(ep_dir, marker)
+
+def ensure_home(
+    driver: MaaDriver,
+    sentry: BlockerSentry,
+    *,
+    log_prefix: str = "[factory]",
+    attempts: int = 2,
+    settle_timeout_s: float = _SETTLE_TIMEOUT_S,
+    idle_wait_s: float = 20.0,
+) -> bool:
+    """把游戏带回主界面（StartUp），失败做有界重试；供工厂与闭环运行器共用。
+
+    实测（2026-10-10 批量）：收尾瞬间的弹窗/非主页态会让 StartUp 链偶发失败，
+    而**紧接重试往往 8 秒内即成功**。故这里做有界重试，避免把可恢复的局
+    直接记成 pre 失败（v6 批量里这类损失占 3/20）。重试次数/等待均为参数，
+    调用方按需从自己的配置注入。
+    """
+    if wait_settle(driver, timeout_s=settle_timeout_s, watchdog=sentry):
+        return True
+    for attempt in range(1, attempts + 1):
+        if wait_idle(driver, timeout_s=idle_wait_s) and wait_settle(
+            driver, timeout_s=settle_timeout_s, watchdog=sentry
+        ):
+            print(f"{log_prefix} 前置回主页第 {attempt} 次重试成功", flush=True)
+            return True
+        print(f"{log_prefix} 前置回主页重试 {attempt} 仍失败", flush=True)
+    print(f"{log_prefix} 前置回主页失败（StartUp）", flush=True)
+    return False
+
 
 def classify_fail_stage(terminal: str | None, failures: list[str]) -> str:
     """推导 episode 的 ``fail_stage`` 字段（nav|formation|start|battle|done）。

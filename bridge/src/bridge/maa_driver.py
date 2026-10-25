@@ -41,10 +41,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
-from PIL import Image
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 # asst 模块级缓存：同一进程只允许 Asst.load 一次
 _ASST_CTX: dict[str, Any] = {}
@@ -270,8 +272,13 @@ class MaaDriver:
     def wait_chain(self, timeout_s: float, mark: int | None = None) -> ChainResult:
         """等待当前任务链收尾，返回 ``ChainResult``。
 
-        终态判定：见到 ``TaskChainCompleted`` 记为成功；
-        ``TaskChainError`` 记为失败；``AllTasksCompleted`` 直接收尾。
+        终态判定：见到 ``TaskChainCompleted`` 记为成功；``TaskChainError``
+        记为失败；``AllTasksCompleted`` 只在链自身终态尚未出现时作收尾信号。
+
+        ⚠️ 快速链同批到达竞态（2026-10-24 实测 SingleStep 心跳链）：
+        ``TaskChainCompleted`` 与紧随的 ``AllTasksCompleted`` 常在**同一批**
+        事件里到达，若让后者覆盖前者，一条成功链会被误报为未收尾
+        （``finished_ok=False``）。故 ``AllTasksCompleted`` 不覆盖已有终态。
         超时返回 ``finished_ok=False`` 且 ``terminal_msg=None``。
         """
         cursor = self.mark() if mark is None else mark
@@ -282,16 +289,16 @@ class MaaDriver:
             fresh, cursor = self.events_since(cursor)
             seen.extend(fresh)
             for evt in fresh:
-                if evt.msg in _CHAIN_TERMINAL_MSGS:
-                    terminal = evt.msg
-            if terminal == "AllTasksCompleted" or terminal in (
-                "TaskChainCompleted",
-                "TaskChainError",
-            ):
+                if evt.msg not in _CHAIN_TERMINAL_MSGS:
+                    continue
+                if evt.msg == "AllTasksCompleted" and terminal is not None:
+                    continue
+                terminal = evt.msg
+            if terminal is not None:
                 break
             time.sleep(0.2)
         ok = terminal == "TaskChainCompleted"
-        if terminal == "TaskChainCompleted":
+        if ok:
             # AllTasksCompleted 紧随其后，补收一个拍
             time.sleep(0.5)
             fresh, cursor = self.events_since(cursor)
@@ -353,6 +360,16 @@ class MaaDriver:
             )
         )
 
+    def set_task_params(self, task_id: int, params: dict[str, Any]) -> bool:
+        """动态改任务参数（``AsstSetTaskParams`` 薄封装），返回是否被接受。
+
+        运行中的任务可在下一轮重新读取参数——``SingleStep`` 逐动作喂入
+        依赖此语义（``PackageTask::run`` 每轮重读 subtasks）。
+        """
+        if self._asst is None:
+            raise RuntimeError("尚未 connect")
+        return bool(self._asst.set_task_params(int(task_id), params))
+
     def start(self) -> bool:
         """开始执行已下发的任务队列。"""
         return bool(self._asst.start())
@@ -384,7 +401,11 @@ class MaaDriver:
         """经 adb exec-out 截一帧，返回 PIL Image（RGB）。
 
         串行化（内部锁）以避免与事件截图、状态采集并发打 adb。
+        PIL 惰性导入：闭环运行器装载决策策略时不需要截图通道
+        （core venv 可无 Pillow import 本模块，截图时再报错）。
         """
+        from PIL import Image  # noqa: PLC0415  # 见 docstring：惰性导入
+
         with self._cap_lock:
             proc = subprocess.run(
                 [self._adb, "-s", self._addr, "exec-out", "screencap", "-p"],

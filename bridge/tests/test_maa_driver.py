@@ -2,16 +2,65 @@
 
 真实截图不入库同规：这里只建临时目录（含中文与全角问号），
 验证传给 MaaCore 窄字符 API 的路径形态，字节级断言。
+
+另含 wait_chain 终态优先级单测（2026-10-24 SingleStep 快链竞态修复）：
+``TaskChainCompleted`` 与 ``AllTasksCompleted`` 同批到达时，后者不得
+覆盖链自身终态——否则一条成功链会被误报为未收尾（loop_runner 路径 B
+的心跳链因此被打成 channel_dead 的实证）。
 """
 
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import pytest
 
-from bridge.maa_driver import resolve_narrow_path
+from bridge.maa_driver import MaaDriver, MaaEvent, resolve_narrow_path
+
+
+def _bare_driver() -> MaaDriver:
+    """不 connect 的裸 driver：只够驱动 wait_chain 的事件游标逻辑。"""
+    drv = MaaDriver.__new__(MaaDriver)
+    drv._events = []
+    drv._lock = threading.Lock()
+    return drv
+
+
+def test_wait_chain_all_tasks_does_not_override_completed() -> None:
+    """快链同批到达：AllTasksCompleted 不覆盖 TaskChainCompleted。"""
+    drv = _bare_driver()
+    drv._events.extend(
+        [
+            MaaEvent(0, 0, "TaskChainStart", {"taskid": 1}),
+            MaaEvent(0, 0, "TaskChainCompleted", {"taskid": 1}),
+            MaaEvent(0, 0, "AllTasksCompleted", {}),
+        ]
+    )
+    res = drv.wait_chain(timeout_s=2.0, mark=0)
+    assert res.finished_ok
+    assert res.terminal_msg == "TaskChainCompleted"
+
+
+def test_wait_chain_error_terminal_is_not_ok() -> None:
+    drv = _bare_driver()
+    drv._events.extend(
+        [
+            MaaEvent(0, 0, "TaskChainError", {"taskid": 1}),
+            MaaEvent(0, 0, "AllTasksCompleted", {}),
+        ]
+    )
+    res = drv.wait_chain(timeout_s=2.0, mark=0)
+    assert not res.finished_ok
+    assert res.terminal_msg == "TaskChainError"
+
+
+def test_wait_chain_timeout_returns_none_terminal() -> None:
+    drv = _bare_driver()
+    res = drv.wait_chain(timeout_s=0.3, mark=0)
+    assert not res.finished_ok
+    assert res.terminal_msg is None
 
 
 def test_ascii_path_passthrough(tmp_path: Path) -> None:

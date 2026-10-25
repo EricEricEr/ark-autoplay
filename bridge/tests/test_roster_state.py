@@ -111,6 +111,25 @@ def test_deployment_mask(tmp_path: Path):
     assert all(not r["deployable"] for r in rows0 if r["name"] == "不存在")
 
 
+def test_skland_all_skills_modules_and_plain_seven_are_preserved(tmp_path):
+    """扫码完整名册不能丢其它技能/模组，普通七级不能推断成专一。"""
+    p = tmp_path / "skland.json"
+    skills = [{"id": "s1", "specializeLevel": 0},
+              {"id": "s2", "specializeLevel": 3}]
+    equip = [{"id": "equip_syn_x", "level": 3}]
+    p.write_text(json.dumps({"ops": [{
+        "name": "合成干员", "opId": "syn_1", "elite": 2, "level": 90,
+        "potential": 6, "mainSkillLvl": 7, "skill_level": 7,
+        "skills": skills, "equip": equip, "defaultEquipId": "equip_syn_x",
+    }]}), encoding="utf-8")
+    state = build_state(skland=p)
+    op = state.ops["合成干员"]
+    assert op.skill_level == 7
+    assert op.extra["skills"] == skills
+    assert op.extra["equip"] == equip
+    assert op.extra["defaultEquipId"] == "equip_syn_x"
+
+
 def test_merge_into_state_scales():
     st = RosterState()
     st.merge_in(RosterOp(name="x", elite=1, level=1, provenance="operbox"))

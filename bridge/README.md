@@ -14,6 +14,7 @@
 | `blocker_watchdog` | 部分弹窗、判负屏、剧情冻结的有界消解；长批次仍会失败 |
 | `roster_state` / `gen_queue` | 双通道名册合并、账号可达/练度/进度过滤 |
 | `collect_operbox` | 已有 OperBox 采集流程的可配置入口，不含完整技能/模组等级 |
+| `tools/skland/collect.mjs` | 可扫码账号的首选，一次扫码自动导出全干员、全部技能和模组明细 |
 | `loop_runner` | 实验性模型闭环，需 core 训练环境与本地模型产物；普通采集不运行它 |
 
 MAA 原生编队支持选助战，2026-10-25 已在好友维什戴尔的 1-8 作业中验证。允许缺一名不代表列表一定有该干员，也不保证助战技能/练度达标。
@@ -26,11 +27,14 @@ MAA 原生编队支持选助战，2026-10-25 已在好友维什戴尔的 1-8 作
 uv sync --frozen
 uv run python -m bridge.replay_controller --help
 uv run python -m bridge.collect_operbox --help
+node tools/skland/collect.mjs --help
 uv run pytest -q
 uv run ruff check
 ```
 
 纯采集依赖 numpy、Pillow、PyYAML，无需 torch/GPU。按 [完整实例模板](configs/instances/example.yaml) 创建本地副本，再提供 `--instance`、`--jobs`、`--nav`、`--work`。
+
+练度优先使用 [森空岛扫码入口](tools/skland/README.md)；Node.js 18+，无 npm 依赖。不能扫码的账号才使用 OperBox 并补充技能/模组资料。
 
 ## 数据与许可
 

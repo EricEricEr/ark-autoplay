@@ -141,6 +141,10 @@ def _skland_skill(o: dict[str, Any]) -> tuple[int | None, int | None]:
     """
     raw = o.get("skillLvl")
     main = o.get("mainSkillLvl")
+    # 新扫码入口已输出项目统一口径；普通 7 级不能再被旧格式规则误判为专一。
+    if o.get("skill_level") is not None:
+        value = int(o["skill_level"])
+        return (value if 1 <= value <= 10 else None), main
     if raw is None:
         return None, main
     if raw <= 6:
@@ -155,13 +159,20 @@ def load_skland(path: Path) -> list[RosterOp]:
     j = json.loads(path.read_text(encoding="utf-8"))
     out = []
     for o in (j.get("ops") or []):
+        if not o.get("name"):
+            # 原始导出仍保留在 ops/unresolved，统一名册不制造名为 None 的干员。
+            continue
         sk, main = _skland_skill(o)
         out.append(RosterOp(
             name=str(o["name"]), elite=int(o.get("elite") or 0),
             level=int(o.get("level") or 0),
             potential=int(o.get("potential") or 0), skill_level=sk,
             main_skill_lvl=main,
-            provenance="skland", skill_verified=sk is not None))
+            provenance="skland", skill_verified=sk is not None,
+            extra={
+                key: o[key] for key in ("opId", "skills", "equip", "defaultEquipId")
+                if key in o
+            }))
     return out
 
 

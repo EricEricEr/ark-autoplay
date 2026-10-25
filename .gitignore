@@ -12,6 +12,8 @@
 **/*.local.json
 **/.env
 **/.env.*
+**/.secrets/
+**/roster/
 *.7z
 *.7z.*
 *.tar.gz

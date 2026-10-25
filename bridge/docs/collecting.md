@@ -9,6 +9,7 @@
 | 系统 | Windows 10/11 x64 |
 | 模拟器 | MuMu，1920×1080、DPI 320；游戏已登录，先处理公告/首次教学 |
 | Python | 3.12 + uv；版本由 `uv.lock` 固定 |
+| 扫码练度 | 能扫码的账号使用现有 Node.js 18+ 运行森空岛入口，无 npm 依赖 |
 | MAA | [配套补丁运行时](../maacore/README.md)，保持 MAA GUI 关闭 |
 | 作业 | 维护者分配的队列，匹配账号练度、进度和助战供给 |
 | 存储 | 为截图预留数十 GB；目录使用英文路径可减少 Windows 编码问题 |
@@ -26,26 +27,45 @@ Copy-Item configs/instances/example.yaml configs/instances/collector.local.yaml
 
 本地配置使用 `.local.yaml` 后缀，已被 Git 忽略。原有 `mumu_local*.yaml` 是开发机历史配置，不要直接照抄其中的磁盘路径。
 
-## 2. 先检查连接与名册
+## 2. 练度优先扫码，OperBox 为不能扫码时的备选
 
-以下命令均在 `bridge/` 执行；将示例数据目录改为自己的路径。`maa_driver` 会连接游戏并截图，先结束其他自动化任务。
+**账号可以森空岛扫码时，一次命令完成扫码和练度获取，无需逐名手抄自有干员练度。** 这也是项目已确认的双通道优先顺序。以下命令在 `bridge/` 执行：
 
 ```powershell
 $env:PYTHONUTF8 = '1'
 $dataRoot = 'C:/ark-data'
 New-Item -ItemType Directory -Force "$dataRoot/debug" | Out-Null
-uv run python -m bridge.maa_driver --instance configs/instances/collector.local.yaml --user-dir "$dataRoot/debug/maa_user"
-uv run python -m bridge.collect_operbox --instance configs/instances/collector.local.yaml --out "$dataRoot/roster/operbox.json" --user-dir "$dataRoot/debug/maa_user"
+node tools/skland/collect.mjs --out "$dataRoot/roster/roster_skland.json"
+uv run python -m bridge.roster_state --skland "$dataRoot/roster/roster_skland.json" --out "$dataRoot/roster/roster_merged.json"
 ```
 
-OperBox 导出当前账号的干员、精英化、等级、潜能等。**它不提供完整技能/模组等级**；对本批使用的干员（含助战）另保留游戏详情截图，注明：
+终端显示二维码，用森空岛 APP 扫码并确认后自动导出；已有有效登录态时直接同步。多绑定角色用 `--uid <游戏UID>` 指定，须与录制账号一致。详细参数见 [扫码工具说明](../tools/skland/README.md)。
+
+名册保留干员精英化/等级/潜能、**全部技能**的等级/专精、全部模组 ID/等级及完整原始响应。记录采集时间；练度改变后重新同步。每局实际技能/模组由作业/画面对齐，不能把已拥有或其它技能的专精当作本局配置。
+
+森空岛名册只覆盖扫码账号自有干员，**助战干员**的实际技能、模组和练度需另行记录。
+
+只有无法扫码时才使用以下备选：
+
+```powershell
+uv run python -m bridge.collect_operbox --instance configs/instances/collector.local.yaml --out "$dataRoot/roster/operbox.json" --user-dir "$dataRoot/debug/maa_user"
+uv run python -m bridge.roster_state --operbox "$dataRoot/roster/operbox.json" --out "$dataRoot/roster/roster_merged.json"
+```
+
+OperBox 提供精英化/等级/潜能，缺技能/模组等级；此时对本批干员另保留详情截图，注明：
 
 - 名称、精英化、等级、潜能；
 - 实际所选技能、普通技能等级、该技能专精等级；
 - 实际装备的模组名称/ID、模组等级，未装备明确记“未装备”；
 - 是否助战、采集时间。升级、换技能或换模组后保存新快照。
 
-未知值留空并说明，不能猜测或填成 0。项目技能编码为普通 1～7、专一/二/三为 8/9/10；保留原始截图便于复核。若使用已有森空岛导出，仅交接名册结果，不交接登录凭据。
+未知值留空并说明，不能猜测或填成 0。项目技能编码为普通 1～7、专一/二/三为 8/9/10。森空岛路径保留原始导出；OperBox 备选保留补充截图。登录态仅在本地 `.secrets/`，不交接凭证。
+
+正式跑关前确认连接（该命令会连接模拟器并截图，先结束其它控制任务）：
+
+```powershell
+uv run python -m bridge.maa_driver --instance configs/instances/collector.local.yaml --user-dir "$dataRoot/debug/maa_user"
+```
 
 ## 3. 取得队列并先跑小样
 

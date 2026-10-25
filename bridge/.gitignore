@@ -240,3 +240,7 @@ maacore/*
 !maacore/README.md
 !maacore/UPSTREAM.json
 !maacore/.gitkeep
+
+# 森空岛扫码客户端源码；覆盖通用 Python 模板对 lib/ 的忽略。
+!tools/skland/lib/
+!tools/skland/lib/**

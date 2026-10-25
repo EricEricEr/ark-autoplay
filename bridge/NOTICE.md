@@ -7,6 +7,8 @@
 - 上游分支 / pinned commit：`dev-v2` / `a82a0e13c68d48cc21ec40380ac08c95f46e9802`（见 [`maacore/UPSTREAM.json`](maacore/UPSTREAM.json)）
 - 上游许可证：**AGPL-3.0-only**
 
+森空岛扫码入口位于 `tools/skland/`，复用项目已有客户端。二维码使用 qrcode-generator（Copyright (c) 2009 Kazuhiko Arase，MIT），原始声明与许可保留于 `tools/skland/lib/vendor/`；未包含真实账号凭证或干员静态数据。
+
 ## 当前状态（2026-10-26）：**是衍生作品**
 
 本目录现已包含上游源码的使用与修改：

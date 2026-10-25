@@ -48,6 +48,7 @@ Arknights Autoplay 合并仓的 `bridge/` 子目录：**数据工厂 + 战场状
 - **配套补丁 MAA 运行时**：`maa_driver` 经 `Asst.load` 调用；DLL、resource、Python/asst 必须配套，见 `maacore/README.md`。驱动期间 MAA GUI 保持关闭。采集者以 `example.yaml` 创建 `*.local.yaml` 本地配置。
 - **MuMu 12 模拟器**（1920×1080 / DPI 320）+ 其自带 adb；实例地址入同上配置。
 - 数据落盘根（episodes/tmp/debug）由运行参数 `--work` 指定，属机器本地目录。
+- 练度采集优先 `tools/skland/collect.mjs` 一键扫码导出（现有 Node.js 18+，无 npm 依赖）；不能扫码才用 OperBox。全部技能/模组和原始响应保留在名册中，登录态只留本地 `.secrets/`。扫码工具离线检查：`node --test tools/skland/collect.test.mjs`。
 
 ## 环境命令
 

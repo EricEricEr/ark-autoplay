@@ -59,6 +59,8 @@ uv run python -m bridge.replay_controller --help
 
 `--help` 不连接游戏。正式采集前按指南填写本机实例配置，并取得与账号匹配的作业队列。普通官方 MAA 不导出本项目使用的 `BattleState`；克隆仓库不会自动获得补丁二进制或游戏数据。
 
+练度采集优先用 [森空岛一键扫码](bridge/tools/skland/README.md)（现有 Node.js 18+、无 npm 依赖）：一次扫码后自动获取全干员、全部技能/专精和模组记录。只有无法扫码的账号才使用 OperBox，并补充其缺失字段；好友助战的练度单独记录。
+
 各子目录独立管理依赖；开发检查为 `uv run pytest -q`、`uv run ruff check`，core/client 另运行 `uv run pyright`。core 训练依赖通过 `uv sync --group train` 安装。数据管线见 [core README](core/README.md)。
 
 ## 素材红线

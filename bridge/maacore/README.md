@@ -1,57 +1,54 @@
-# maacore/ —— MaaCore fork 与状态导出
+# 补丁 MaaCore 运行时
 
-本目录存放 **MaaAssistantArknights / MaaCore 的 fork 锚点**。
+状态采集需要本项目配套的 MaaCore；普通官方 MAA 没有 `BattleState` 回调。运行时二进制和上游源码 checkout 不随本 Git 仓库分发，采集者可以使用维护者提供的配套目录，或自行按以下记录重建。
 
-**源码树不入库**（1.2 GB+）：由 [`UPSTREAM.json`](UPSTREAM.json) 记录的 pinned commit
-精确重建，仓库只保存「上游 commit pin + `../patches/` 中的本地改动」。
-重建步骤见 [`UPSTREAM.json`](UPSTREAM.json) 同目录的说明（或 `UPSTREAM.json` 顶部注释与
-`../NOTICE.md`）。这样既满足 AGPL 的源码可得性（公开上游按 commit 可取回），
-又避免把上游整棵树塞进本仓。
+## 固定版本与完整补丁
 
-## 当前状态（2026-10-09 实测）
+- 上游：[MaaAssistantArknights](https://github.com/MaaAssistantArknights/MaaAssistantArknights)，`dev-v2`，pin `a82a0e13c68d48cc21ec40380ac08c95f46e9802`。
+- **重建入口**：[runtime-a82a0e13.patch](../patches/runtime-a82a0e13.patch)，对干净 pin 一次应用。
+- 该补丁覆盖当前部署源码的 8 个文件，包括状态导出、`nav_only`、代理指挥护栏、费用/击杀刷新和本地探针。`UPSTREAM.json` 记录补丁 SHA-256、目标 tree 和已部署 DLL 的参考哈希。
+- `0001`～`0005` 保留历史说明；部分文件是累积 diff，**不是可直接逐个应用的独立系列**。不能先应用完整补丁再重复应用历史补丁。
+- 2026-10-26 已用独立临时 Git index 验证：干净 pin → 完整补丁 → tree 与实际运行源码 tree 一致。未为此次文档更新重新编译或真机测试。
 
-| 项 | 状态 |
-|---|---|
-| 稀疏克隆 | ✅ 6.5 MB（仅 C++ 所需路径） |
-| MaaUtils submodule | ✅ 已拉（提供 maadeps 框架 + meojson） |
-| 预编译依赖 | ✅ MaaDeps v2.14.1 x64-windows（313 MB） |
-| 编译 | ✅ **exit 0**，产出 `MaaCore.dll` 5.97 MB |
-| 本地补丁 | ✅ `0001-battle-state-callback.patch`（4 文件 +90 行 0 删除） |
+## 运行时目录
 
-## fork 原则
-
-1. **不做无谓的源码 fork**：上游提交哈希可追溯；**本地改动一律以 `patches/` 维护**，
-   按序编号（`0001-xxx.patch`…），每个 patch 配一份 `.md` 说明文档。
-   patch 必须能对 pristine 源码 `git apply --check` 通过（已实测）。
-2. **改动最小化**：优先"只读取上游已有成员并序列化"，**不修改上游的识别/决策逻辑**。
-   patch 0001 是范例：MaaCore 内部本就在维护费用/击杀/部署状态，我们只是把它导出来。
-3. **许可证**：上游为 **AGPL-3.0**（**已核实无附加条款**，见 `UPSTREAM.json`）；
-   本目录作为衍生作品同样以 AGPL-3.0 授权。仓库整体已是 AGPL-3.0，无需变更。
-   ⚠️ **不要使用 MAA Logo，也不要宣称与 MAA Team 有合作关系**（用户协议 §2.2 / §2.3）。
-4. **调用边界**：`maacore/` 只被本仓（`src/bridge/`）调用；跨进程边界仍走版本化协议
-   （这是为解耦与可复现性，**不再**是许可证隔离要求——全项目已统一 AGPL-3.0，见
-   `../core/docs/adr/0004-unify-agpl-monorepo.md`）。
-
-## 更新上游的流程
-
-```bash
-cd bridge/maacore/_src
-git fetch origin dev-v2
-git rebase origin/dev-v2          # 或 checkout 新 commit
-git apply ../../patches/*.patch   # 逐一 reapply，冲突按 patch 说明解决
-# 然后重新配置与编译（见 UPSTREAM.json 的 build 小节）
+```text
+maa_runtime_patched/
+  MaaCore.dll                 本项目补丁构建
+  resource/                   与 pin 同一提交的完整资源及依赖数据
+  Python/asst/                Python 调用封装
+  其他运行依赖 DLL            参考 UPSTREAM.json，开发机由官方 v6.18.0 配套
 ```
 
-## 历史待核实项（**已结案**）
+**DLL 与 resource 必须配套。** 将新 dev-v2 DLL 与旧官方资源混用曾因 schema_version 不匹配导致 `AsstLoadResource` 失败。仅有源码稀疏 checkout 不保证带全 resource/地图子模块；准备运行目录前须取齐同一提交的资源与子模块内容。
 
-> 原文（立项文档 §17 / 旧版 README）：
-> 「MaaCore 现有回调是否足以支撑状态落盘，还是必须 fork 改造——第一个开发周给结论」
+当前 Python 工厂检查 `maa_dir` 路径包含 `maa_runtime_patched`；这只是避免误用的名称护栏，不能证明 DLL 的能力或资源版本。协助者需从提供方取得对应源码/版本清单；名称正确仍要通过首次状态采集验收。
 
-**结论（2026-10-09）**：回调**不足**，必须改造。证据：
+## 开发者重建
 
-- MaaCore 导出的 C API 仅 31 个 `Asst*` 函数，**无 `GetCost`/`GetKills`**；
-- 回调消息类型仅 13 种（任务链生命周期），**不含战场状态字段**；
-- 但 `BattleHelper` 内部**已维护** `m_cost` / `m_kills` / `m_total_kills` /
-  `m_cur_deployment_opers` / `m_battlefield_opers`——**识别早就做了，只是不外吐**。
+重建需要已有 C++ 工具链；普通采集者拿到配套运行目录后无需安装编译工具。开发机验证过 VS 2022 Build Tools、Windows SDK、CMake >=3.28、MaaDeps v2.14.1 x64-windows；准确记录见 [UPSTREAM.json](UPSTREAM.json)。
 
-因此改造方式不是"新写识别"，而是"把已有值导出"——即 patch 0001。
+在本仓根目录执行以下取源码/补丁步骤；不要在已有修改的 checkout 上强行覆盖：
+
+```powershell
+git clone --no-checkout https://github.com/MaaAssistantArknights/MaaAssistantArknights.git bridge/maacore/_src
+git -C bridge/maacore/_src checkout a82a0e13c68d48cc21ec40380ac08c95f46e9802
+git -C bridge/maacore/_src submodule update --init --recursive
+git -C bridge/maacore/_src apply --check ../../patches/runtime-a82a0e13.patch
+git -C bridge/maacore/_src apply ../../patches/runtime-a82a0e13.patch
+```
+
+然后按该 pin 的 `src/MaaUtils`/MaaDeps 说明准备 `src/MaaUtils/MaaDeps` 依赖；版本与 triplet 见清单。以下配置与开发机构建参数一致，并不自动下载依赖：
+
+```powershell
+cmake -S bridge/maacore/_src -B bridge/maacore/_src/build -G "Visual Studio 17 2022" -A x64 -DBUILD_WPF_GUI=OFF -DBUILD_DEBUG_DEMO=OFF -DBUILD_RESOURCE_UPDATER=OFF -DINSTALL_RESOURCE=OFF -DINSTALL_PYTHON=OFF -DWITH_EMULATOR_EXTRAS=OFF -DMAADEPS_TRIPLET=maa-x64-windows
+cmake --build bridge/maacore/_src/build --config Release --target MaaCore
+```
+
+从 `build/bin/Release/MaaCore.dll` 取构建产物，与同 pin 完整资源、Python/asst、运行依赖组装成独立 `maa_runtime_patched` 目录，不覆盖普通 MAA 安装。不同工具链重建的 DLL 哈希可以不同；参考哈希用于识别维护者当前实测二进制，不能要求所有重建字节相同。
+
+## 已知边界
+
+普通 Copilot 采集在动作前导出状态；SingleStep 的 Output 心跳只刷新费用/击杀，手牌/部署字段可能陈旧，实验性模型闭环以影子台账补足。没有敌人实时位置/完整技力。探针可在进程工作目录产生 `debug/`；该目录被根 `.gitignore` 忽略，不能提交其中的截图。
+
+许可证为 AGPL-3.0，上游关系见 [NOTICE.md](../NOTICE.md)。

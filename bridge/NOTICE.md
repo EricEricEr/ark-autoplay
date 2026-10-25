@@ -7,13 +7,13 @@
 - 上游分支 / pinned commit：`dev-v2` / `a82a0e13c68d48cc21ec40380ac08c95f46e9802`（见 [`maacore/UPSTREAM.json`](maacore/UPSTREAM.json)）
 - 上游许可证：**AGPL-3.0-only**
 
-## 当前状态（2026-10-09）：**是衍生作品**
+## 当前状态（2026-10-26）：**是衍生作品**
 
 本目录现已包含上游源码的使用与修改：
 
 - `maacore/_src/` 下为 MaaCore 源码（稀疏克隆，**不入库**，按 pinned commit 重建）；
 - [`patches/0001-battle-state-callback.patch`](patches/0001-battle-state-callback.patch)
-  是对上游源码的本地修改（新增战场状态回调，4 文件 +90 行 0 删除）。
+  是早期状态回调补丁；当前可重建的完整修改为 [runtime-a82a0e13.patch](patches/runtime-a82a0e13.patch)，其哈希和目标 tree 见 `maacore/UPSTREAM.json`。
 
 因此**本目录是 MaaCore 的衍生作品（derivative work）**，依 AGPL-3.0 整体以
 **AGPL-3.0** 授权——与本仓既有许可一致，**无需变更**。

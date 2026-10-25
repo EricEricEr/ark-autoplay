@@ -1,0 +1,24 @@
+# Local data, credentials, captures, and training outputs never enter Git.
+**/debug/
+**/episodes/
+**/episodes_quarantine/
+**/processed/
+**/runs/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/*.local.yaml
+**/*.local.json
+**/.env
+**/.env.*
+*.7z
+*.7z.*
+*.tar.gz
+*.npz
+*.parquet
+*.pt
+*.onnx
+maa_runtime_patched/
+ark-data/
+ark-data-loop/

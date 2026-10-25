@@ -1,0 +1,2 @@
+# Source patch hashes must remain stable across Windows and Linux checkouts.
+*.patch text eol=lf whitespace=-blank-at-eol

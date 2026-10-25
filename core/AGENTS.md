@@ -5,7 +5,7 @@
 
 ## 项目概述
 
-明日方舟自主作战 AI 的核心仓库（Apache-2.0）：协议库（状态 / 动作 / 轨迹，semver 版本化）、感知后处理、双轨决策模型（实体 Transformer + Qwen3-VL-4B 对照）、训练（自监督 + 行为克隆 + DAgger）、三档零样本评测与 ONNX 导出。与 bridge（AGPL，数据工厂）、client（玩家端）两个仓库仅通过版本化 JSON 协议通信。
+明日方舟自主作战 AI 合并仓的 core 子目录（AGPL-3.0）：协议、数据管线、实体 Transformer、状态行为克隆、SSL/K 折评测与实验性推理。像素轨道、DAgger、完整 ONNX 玩家端仍未交付。与 bridge/client 同属单仓，可相互 import；跨进程使用版本化协议。
 
 ## 目录布局
 
@@ -15,9 +15,11 @@ src/ark_core/
 ├── perception/    # state_builder（bridge 原始输出→标准状态）、tile_map（格子坐标系）、enemy_det/
 ├── models/        # track_a/（实体 Transformer+指针网络+掩码头）、track_b/（Qwen3-VL-4B QLoRA 配方）
 ├── training/      # pretrain_ssl / imitate / augment / dagger
+├── infer/         # 在线推理胶水（track_a_v1：battle_state → 合法作业动作，链路冒烟层，非能力证据）
 ├── evaluation/    # splits（三档划分+泄漏检查）、runner、report、dispute/（争议重标模板）
 ├── export/        # to_onnx / quantize
-├── datapipe/      # 数据管线 v1（featvec/关卡元数据/作业转换/装置类别词表/低练分桶，ADR-0002）
+├── datapipe/      # 数据管线 v1（featvec/关卡元数据/作业转换/装置类别词表/低练分桶，ADR-0002；
+                   # stagefeat 关卡静态特征 v1（ADR-0003）/ routefeat 路线几何→每格通道（v1.1））
 └── baselines/     # 随机合法动作等基线
 configs/           # 实验配置（yaml，一实验一配置，禁止代码内超参）
 tests/             # unit / integration / golden（合成样例）/ leak（划分泄漏检查）

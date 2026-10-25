@@ -26,11 +26,23 @@
       "required": true,
       "note": "提供 maadeps 依赖框架与 meojson；缺它无法配置 CMake"
     },
-    "3rdparty/EmulatorExtras": {"required": false, "note": "仅 WITH_EMULATOR_EXTRAS=ON 时需要"},
-    "src/maa-cli": {"required": false},
-    "src/MaaMacGui": {"required": false},
-    "src/MAAUnified": {"required": false},
-    "test": {"required": false, "note": "测试集，较大"}
+    "3rdparty/EmulatorExtras": {
+      "required": false,
+      "note": "仅 WITH_EMULATOR_EXTRAS=ON 时需要"
+    },
+    "src/maa-cli": {
+      "required": false
+    },
+    "src/MaaMacGui": {
+      "required": false
+    },
+    "src/MAAUnified": {
+      "required": false
+    },
+    "test": {
+      "required": false,
+      "note": "测试集，较大"
+    }
   },
   "deps": {
     "repo": "MaaAssistantArknights/MaaDeps",
@@ -78,7 +90,34 @@
       "summary": "新增 SubTaskExtraInfo 回调 what=BattleState，导出费用/击杀/待部署栏/已部署干员",
       "scale": "4 文件 +90 行 0 删除（纯新增）",
       "applies_clean": true,
-      "verified_in_binary": ["BattleState", "is_usual_location", "total_kills"]
+      "verified_in_binary": [
+        "BattleState",
+        "is_usual_location",
+        "total_kills"
+      ]
     }
-  ]
+  ],
+  "runtime_patch": {
+    "file": "../patches/runtime-a82a0e13.patch",
+    "apply_to": "a82a0e13c68d48cc21ec40380ac08c95f46e9802",
+    "sha256": "3863c0d85af8dc86e6954839cb79b21c5a372c4392a4d1f1e0538bd0c3e2a391",
+    "source_commit_local": "5d0962d8582f85f7e5be79137bb348fce6cf1e0c",
+    "target_tree": "22b657b2011b0a18879210ff97166aa7aa8d8fe5",
+    "verified_at": "2026-10-26",
+    "verification": "git apply --cached --check against clean pinned index; applied tree equals source HEAD tree",
+    "mode": "single_complete_patch; historical 0001-0005 are not an independent patch series",
+    "features": [
+      "BattleState callback",
+      "Fight nav_only",
+      "PRTS guard",
+      "costs/kills refresh",
+      "local probe"
+    ]
+  },
+  "runtime_binary_reference": {
+    "sha256": "f3fa4856ef4b7544acc69445dfadc735a6e19d15aa9c843d947b35d2da707f20",
+    "size_bytes": 6268928,
+    "checked_at": "2026-10-26",
+    "note": "Deployed DLL matches local build output; binary is not included. Rebuild hashes may differ by toolchain."
+  }
 }

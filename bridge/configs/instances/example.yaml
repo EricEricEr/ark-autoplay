@@ -1,9 +1,14 @@
-# MuMu 模拟器实例定义示例。
-# instance_pool 启动时按此校验：不符合 1920x1080 / DPI 320 基线的实例拒绝分配。
-name: mumu-0            # 实例名（与 MuMu 多开器中的名称对应）
+# MuMu 采集实例模板：复制为 collector.local.yaml 后按本机填写。
+# 端口用本机实例的实际值；路径用正斜杠，避免 YAML 转义问题。
+name: collector
 adb_host: 127.0.0.1
-adb_port: 16384         # MuMu 12 首个实例的默认 ADB 端口
+adb_port: 16384         # 示例值，不代表所有实例都用此端口
 resolution:
   width: 1920
   height: 1080
 dpi: 320
+adb_path: C:/MuMu/nx_main/adb.exe
+# 当前工厂有目录名护栏：路径中须含 maa_runtime_patched。
+# 名称本身不能证明 DLL 已打补丁；须用 maacore/README.md 的配套运行时。
+maa_dir: C:/ark/maa_runtime_patched
+maa_version: dev-v2+a82a0e13+runtime-patch

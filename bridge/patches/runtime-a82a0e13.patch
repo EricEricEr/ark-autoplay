@@ -1,0 +1,524 @@
+diff --git a/src/MaaCore/Task/BattleHelper.cpp b/src/MaaCore/Task/BattleHelper.cpp
+index 32ea597bc3fb409432f352a9ec4efacefea628df..539af9f20d2ea16e600d34a42a8192ab747bf74f 100644
+--- a/src/MaaCore/Task/BattleHelper.cpp
++++ b/src/MaaCore/Task/BattleHelper.cpp
+@@ -1,6 +1,13 @@
+ #include "BattleHelper.h"
+ 
++#include <chrono>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <filesystem>
++#include <fstream>
+ #include <future>
++#include <mutex>
+ #include <thread>
+ 
+ #include "Config/GeneralConfig.h"
+@@ -25,6 +32,100 @@
+ 
+ using namespace asst::battle;
+ 
++// [PATCH 0003] BattleState 探针。
++//
++// 目的：patch 0001 已把 costs/kills 写进 BattleState 回调，但实测恒 0。要区分
++// 「update_* 根本没被调用」与「调用了但识别没成功」，只能在这两个函数内部打点。
++// 结果以逐行 JSON 追加到 debug/probe_battlestate.jsonl（相对进程 cwd，可用环境变量
++// ARK_BATTLESTATE_PROBE 覆盖为绝对路径），字段含 fn / n_cost / n_kills / has_result /
++// status_id / success / costs / kills / total_kills / has_prev / job_id(环境变量 ARK_JOB_ID)。
++// 只读既有成员与识别结果，不改动任何识别/决策逻辑。
++namespace
++{
++std::mutex s_probe_mutex;
++std::uint64_t s_probe_cost_calls = 0;
++std::uint64_t s_probe_kills_calls = 0;
++std::uint64_t s_probe_lines = 0;
++bool s_probe_open_failed_logged = false;
++
++// MSVC 下 std::getenv 会触发 C4996（本项目按错误处理），改用 _dupenv_s。
++std::string probe_env_value(const char* name)
++{
++#ifdef _MSC_VER
++    char* buffer = nullptr;
++    size_t size = 0;
++    if (_dupenv_s(&buffer, &size, name) != 0 || buffer == nullptr) {
++        return {};
++    }
++    std::string value(buffer);
++    free(buffer);
++    return value;
++#else
++    if (const char* value = std::getenv(name); value != nullptr) {
++        return std::string(value);
++    }
++    return {};
++#endif
++}
++
++std::filesystem::path probe_battlestate_file_path()
++{
++    const std::string env = probe_env_value("ARK_BATTLESTATE_PROBE");
++    if (!env.empty()) {
++        return std::filesystem::path(env);
++    }
++    return std::filesystem::path("debug") / "probe_battlestate.jsonl";
++}
++
++void probe_battle_state(
++    const char* fn,
++    bool has_result,
++    int status_id,
++    bool success,
++    int costs,
++    int kills,
++    int total_kills,
++    bool has_prev)
++{
++    std::lock_guard<std::mutex> lock(s_probe_mutex);
++    if (std::strcmp(fn, "update_cost") == 0) {
++        ++s_probe_cost_calls;
++    }
++    else {
++        ++s_probe_kills_calls;
++    }
++    if (s_probe_lines >= 200000) {
++        return;
++    }
++    ++s_probe_lines;
++
++    const auto path = probe_battlestate_file_path();
++    std::error_code ec;
++    if (!path.parent_path().empty()) {
++        std::filesystem::create_directories(path.parent_path(), ec);
++    }
++    std::ofstream ofs(path, std::ios::app | std::ios::binary);
++    if (!ofs) {
++        if (!s_probe_open_failed_logged) {
++            s_probe_open_failed_logged = true;
++            Log.error("BattleState probe: cannot open", path.string(), ec.message());
++        }
++        return;
++    }
++
++    const auto now_ms =
++        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
++            .count();
++    const std::string job_id = probe_env_value("ARK_JOB_ID");
++    ofs << "{\"t_ms\":" << now_ms << ",\"fn\":\"" << fn << "\",\"n_cost\":" << s_probe_cost_calls
++        << ",\"n_kills\":" << s_probe_kills_calls << ",\"has_result\":" << (has_result ? "true" : "false")
++        << ",\"status_id\":" << status_id << ",\"success\":" << (success ? "true" : "false")
++        << ",\"costs\":" << costs << ",\"kills\":" << kills << ",\"total_kills\":" << total_kills
++        << ",\"has_prev\":" << (has_prev ? "true" : "false") << ",\"job_id\":\"" << job_id << "\"}\n";
++    ofs.flush();
++}
++}
++
+ asst::BattleHelper::BattleHelper(Assistant* inst) :
+     m_inst_helper(inst)
+ {
+@@ -379,11 +480,29 @@ bool asst::BattleHelper::update_kills(const cv::Mat& image, const cv::Mat& image
+     }
+     auto result_opt = analyzer.analyze();
+     if (!result_opt || result_opt->kills.status == BattlefieldMatcher::MatchStatus::Invalid) {
++        probe_battle_state(
++            "update_kills",
++            result_opt.has_value(),
++            result_opt ? static_cast<int>(result_opt->kills.status) : -1,
++            false,
++            static_cast<int>(m_cost),
++            static_cast<int>(m_kills),
++            static_cast<int>(m_total_kills),
++            !image_prev.empty());
+         return false;
+     }
+     if (result_opt->kills.status == BattlefieldMatcher::MatchStatus::Success) {
+         std::tie(m_kills, m_total_kills) = result_opt->kills.value;
+     }
++    probe_battle_state(
++        "update_kills",
++        true,
++        static_cast<int>(result_opt->kills.status),
++        result_opt->kills.status == BattlefieldMatcher::MatchStatus::Success,
++        static_cast<int>(m_cost),
++        static_cast<int>(m_kills),
++        static_cast<int>(m_total_kills),
++        !image_prev.empty());
+     return true;
+ }
+ 
+@@ -394,14 +513,81 @@ bool asst::BattleHelper::update_cost(const cv::Mat& image, const cv::Mat& image_
+     analyzer.set_image_prev(image_prev);
+     auto result_opt = analyzer.analyze();
+     if (!result_opt || result_opt->costs.status == BattlefieldMatcher::MatchStatus::Invalid) {
++        probe_battle_state(
++            "update_cost",
++            result_opt.has_value(),
++            result_opt ? static_cast<int>(result_opt->costs.status) : -1,
++            false,
++            static_cast<int>(m_cost),
++            static_cast<int>(m_kills),
++            static_cast<int>(m_total_kills),
++            !image_prev.empty());
+         return false;
+     }
+     else if (result_opt->costs.status == BattlefieldMatcher::MatchStatus::Success) {
+         m_cost = result_opt->costs.value;
+     }
++    probe_battle_state(
++        "update_cost",
++        true,
++        static_cast<int>(result_opt->costs.status),
++        result_opt->costs.status == BattlefieldMatcher::MatchStatus::Success,
++        static_cast<int>(m_cost),
++        static_cast<int>(m_kills),
++        static_cast<int>(m_total_kills),
++        !image_prev.empty());
+     return true;
+ }
+ 
++/// [PATCH 0001] 战场状态导出。只读取既有成员并序列化，不触碰识别逻辑。
++json::object asst::BattleHelper::battle_state_json() const
++{
++    json::object state;
++    state["in_battle"] = m_in_battle;
++    state["in_speedup"] = m_in_speedup;
++    state["costs"] = m_cost;
++    state["kills"] = m_kills;
++    state["total_kills"] = m_total_kills;
++    state["camera_count"] = m_camera_count;
++
++    // 待部署栏（手牌）：名字 / 职业 / 费用 / 是否可部署 / 是否冷却中 / 头像位置
++    json::array hand;
++    for (const auto& oper : m_cur_deployment_opers) {
++        hand.emplace_back(json::object {
++            { "index", static_cast<int64_t>(oper.index) },
++            { "name", oper.name },
++            // 职业用可读字符串（enum_to_string）而非裸整数：下游无需同步枚举定义
++            { "role", enum_to_string(oper.role) },
++            { "role_id", static_cast<int64_t>(oper.role) },
++            { "cost", oper.cost },
++            { "available", oper.available },
++            { "cooling", oper.cooling },
++            { "rect", json::array { oper.rect.x, oper.rect.y, oper.rect.width, oper.rect.height } },
++            { "is_usual_location", oper.is_usual_location },
++        });
++    }
++    state["hand"] = std::move(hand);
++
++    // 已部署干员：职业 + 名字 -> 棋盘格坐标（MaaCore 的 Point 是格子坐标而非像素）
++    json::array deployed;
++    for (const auto& [tag, loc] : m_battlefield_opers) {
++        deployed.emplace_back(json::object {
++            { "name", tag.name },
++            { "role", enum_to_string(tag.role) },
++            { "role_id", static_cast<int64_t>(tag.role) },
++            { "row", loc.y },
++            { "col", loc.x },
++        });
++    }
++    state["deployed"] = std::move(deployed);
++
++    // 关卡与镜头信息：供下游把格子坐标映射回像素
++    state["stage_name"] = m_stage_name;
++    state["camera_shift"] = json::array { m_camera_shift.first, m_camera_shift.second };
++
++    return state;
++}
++
+ bool asst::BattleHelper::deploy_oper(const std::string& name, const Point& loc, DeployDirection direction)
+ {
+     return deploy_oper(battle::Role::Unknown, name, loc, direction);
+diff --git a/src/MaaCore/Task/BattleHelper.h b/src/MaaCore/Task/BattleHelper.h
+index 3393b5c5424348eaaa7f2a9baea3f8911cd108eb..3e215099d87680094bd8879401500e48ebd9ece3 100644
+--- a/src/MaaCore/Task/BattleHelper.h
++++ b/src/MaaCore/Task/BattleHelper.h
+@@ -57,6 +57,20 @@ protected:
+     bool update_kills(const cv::Mat& image, const cv::Mat& image_prev = cv::Mat());
+     bool update_cost(const cv::Mat& image, const cv::Mat& image_prev = cv::Mat());
+ 
++    /// [PATCH 0001] 战场状态导出：把已在维护的战场数值状态组装为 JSON。
++    ///
++    /// 用途：数据工厂（ark-autoplay-bridge）重放作业时采集 (状态, 动作) 轨迹，
++    /// 供决策模型做行为克隆。MaaCore 内部本就在维护这些量（m_cost / m_kills /
++    /// m_cur_deployment_opers / m_battlefield_opers），但它们此前**未通过 asst
++    /// 接口暴露**（导出的 C API 无 GetCost/GetKills，回调亦不含战场状态）。
++    ///
++    /// **本方法只读取已有成员并序列化，不修改任何识别逻辑**，故不影响上游行为。
++    ///
++    /// 注意：这里只**组装** JSON，不负责发送——发送需要 `AbstractTask::callback`，
++    /// 而本类不继承 AbstractTask（访问不到）。发送由同时继承两者的
++    /// `BattleProcessTask::notify_battle_state()` 完成。
++    json::object battle_state_json() const;
++
+     cv::Mat get_top_view(const cv::Mat& cam_img, bool side = true, bool has_multi_stages = false);
+ 
+     bool deploy_oper(const std::string& name, const Point& loc, battle::DeployDirection direction);
+diff --git a/src/MaaCore/Task/Interface/CopilotTask.cpp b/src/MaaCore/Task/Interface/CopilotTask.cpp
+index 35fd2dd3cf7e9c5f523eec5b6ed87322726dabfb..728b12dbd1489cd4641eccaa34da33fa5db550db 100644
+--- a/src/MaaCore/Task/Interface/CopilotTask.cpp
++++ b/src/MaaCore/Task/Interface/CopilotTask.cpp
+@@ -22,6 +22,14 @@ asst::CopilotTask::CopilotTask(const AsstCallback& callback, Assistant* inst) :
+ {
+     LogTraceFunction;
+ 
++    // [PATCH 0004] 红线护栏：本局开打前确认"代理指挥"为 OFF。
++    // 必须排在**所有**子任务之前——关卡详情页的勾选框只在点「开始行动」之前可见，
++    // 一旦开打就再也够不到。
++    auto prts_guard_ptr = std::make_shared<MultiCopilotTaskPlugin>(callback, inst, TaskType);
++    prts_guard_ptr->set_prts_guard_only(true);
++    prts_guard_ptr->set_retry_times(0);
++    m_subtasks.emplace_back(prts_guard_ptr);
++
+     m_multi_copilot_plugin_ptr->set_retry_times(0);
+     m_multi_copilot_plugin_ptr->set_battle_task_ptr(m_battle_task_ptr);
+     m_subtasks.emplace_back(m_multi_copilot_plugin_ptr);
+diff --git a/src/MaaCore/Task/Interface/FightTask.cpp b/src/MaaCore/Task/Interface/FightTask.cpp
+index 7dfbdf4cfbfd9073407068b6b42d8a5f9da8b65e..f2da70e1776737f7b5cac4ade5c3d1441a1c18ab 100644
+--- a/src/MaaCore/Task/Interface/FightTask.cpp
++++ b/src/MaaCore/Task/Interface/FightTask.cpp
+@@ -88,6 +88,10 @@ bool asst::FightTask::set_params(const json::value& params)
+ 
+     const int stone = params.get("stone", 0);
+     const int times = params.get("times", INT_MAX);
++    // [ark-autoplay patch 0002] 只导航不开打：导航到关卡准备界面后
++    // 即成功收尾，不执行作战（也就不会触碰游戏内代理作战 UsePrts）。
++    // 默认 false，行为与原版完全等价。详见 docs/adr/0005。
++    const bool nav_only = params.get("nav_only", false);
+     const int series = params.get("series", 1);
+ 
+     m_fight_times_prt->set_fight_times(times);
+@@ -190,5 +194,27 @@ bool asst::FightTask::set_params(const json::value& params)
+     m_sidestory_reopen_task_ptr->set_enable_yituliu(enable_yituliu);
+     m_sidestory_reopen_task_ptr->set_server(server);
+ 
++    // [ark-autoplay patch 0002] nav_only：仅保留导航，禁用作战相关子任务。
++    // PackageTask::run 对 disabled 子任务是 continue 跳过，故整体仍
++    // 正常返回成功 —— 即"导航到准备界面后干净收尾"。
++    if (nav_only) {
++        Log.info(__FUNCTION__, "nav_only enabled: navigate only, no battle");
++        // [PATCH 0004] 导航链绝不点开"代理指挥"勾选框。
++        // 实测（asst.log）：nav_only 下 Fight@UsePrts 仍被选中 7 次、UsePrts.png
++        // 命中 21 次（score 0.967）——点击来自 StageBegin→Fight→FightBegin 这条
++        // next 链（m_start_up_task_ptr）；上游只对 StartButton1/PRTS* 设了 0 次限制，
++        // **漏了 UsePrts**。times_limit 按"最长后缀"匹配（ProcessTask.cpp:488），
++        // 故 "UsePrts" 同时覆盖 Fight@UsePrts；"-StageSN"/"-Annihilation" 是独立后缀。
++        for (const auto& chain : { m_start_up_task_ptr, m_fight_task_ptr }) {
++            chain->set_times_limit("UsePrts", 0)
++                .set_times_limit("UsePrts-StageSN", 0)
++                .set_times_limit("UsePrts-Annihilation", 0);
++        }
++        m_fight_task_ptr->set_enable(false);
++        m_sidestory_reopen_task_ptr->set_enable(false);
++        m_stage_drops_plugin_ptr->set_enable(false);
++        m_fight_times_prt->set_enable(false);
++    }
++
+     return true;
+ }
+diff --git a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp
+index 15451a030e2fb5a8422e577eecab97e8ca681c75..633c7a3687487853b54c9af993d30434a28e7da5 100644
+--- a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp
++++ b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.cpp
+@@ -1,4 +1,4 @@
+-#include "BattleProcessTask.h"
++﻿#include "BattleProcessTask.h"
+ 
+ #include <chrono>
+ #include <future>
+@@ -230,6 +230,9 @@ bool asst::BattleProcessTask::do_action(const battle::copilot::Action& action, s
+     }
+ 
+     if (!wait_condition(action)) {
++        // [PATCH 0005] 战斗结束/等待失败时原逻辑直接 return，最后一个长时间等待动作
++        // 的战场状态（kills 已累计）永不导出，故此处补一条快照。
++        notify_battle_state();
+         return false;
+     }
+ 
+@@ -246,6 +249,11 @@ bool asst::BattleProcessTask::do_action(const battle::copilot::Action& action, s
+     const auto& [/*可unknown*/ role, name] = get_name_from_group(action.role, action.name);
+     const auto& location = action.location;
+ 
++    // [PATCH 0001] 动作执行前导出战场状态——这是 (state, action) 的配对点，
++    // 也是行为克隆要学的样本。放在此处可确保读到的 m_cost / m_kills /
++    // m_cur_deployment_opers 已由 wait_condition() 与上面的 update_deployment() 刷新。
++    notify_battle_state();
++
+     switch (action.type) {
+     case ActionType::Deploy:
+         // Deploy 语义上必填 location，未填时按 [0, 0] 部署（与历史版本 json 缺失时的行为一致）
+@@ -448,6 +456,27 @@ void asst::BattleProcessTask::notify_action(const battle::copilot::Action& actio
+     callback(AsstMsg::SubTaskExtraInfo, info);
+ }
+ 
++/// [PATCH 0001] 发送战场状态（what = "BattleState"）。
++///
++/// 触发时机：每次 `do_action()` 的 `wait_condition()` 之后——即**每个作业动作
++/// 执行前的那个决策时刻**。这正是行为克隆需要的 (state, action) 配对点。
++///
++/// 附带说明：`wait_condition()` 内部会在等待条件满足时更新 m_cost / m_kills /
++/// m_cur_deployment_opers，故此处读到的是"该动作即将执行时的战场状态"。
++void asst::BattleProcessTask::notify_battle_state()
++{
++    // [PATCH 0005] 导出前无条件刷新一次：catch 行动作未声明 kills/costs 条件时，
++    // wait_condition() 不会调用 update_kills()/update_cost()，导致导出恒 0。
++    if (const cv::Mat image = ctrler()->get_image(); !image.empty()) {
++        update_kills(image);
++        update_cost(image);
++    }
++
++    json::value info = basic_info_with_what("BattleState");
++    info["details"] = battle_state_json();
++    callback(AsstMsg::SubTaskExtraInfo, info);
++}
++
+ bool asst::BattleProcessTask::wait_condition(const Action& action)
+ {
+     cv::Mat image, image_prev;
+diff --git a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.h b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.h
+index 933f9fb4f697b65dca0ce93f7ecde6ed176d1bc3..0ed3cfceb7047ee2351dbf54a825dc820e4f1411 100644
+--- a/src/MaaCore/Task/Miscellaneous/BattleProcessTask.h
++++ b/src/MaaCore/Task/Miscellaneous/BattleProcessTask.h
+@@ -43,6 +43,14 @@ protected:
+     // 将作业步骤中的name转换为具体干员名
+     battle::OperNameTag get_name_from_group(battle::Role role, const std::string& oper_name_in_action);
+     void notify_action(const battle::copilot::Action& action);
++
++    /// [PATCH 0001] 发送战场状态回调（what = "BattleState"）。
++    ///
++    /// 放在本类而非 BattleHelper：本类同时继承 AbstractTask（提供 protected 的
++    /// `callback()`）与 BattleHelper（提供状态成员），是唯一能同时够到两者的位置。
++    /// 状态组装见 `BattleHelper::battle_state_json()`。
++    void notify_battle_state();
++
+     bool wait_condition(const battle::copilot::Action& action);
+     bool enter_bullet_time(battle::Role role, const std::string& name, const std::optional<Point>& location);
+     void sleep_and_do_strategy(unsigned millisecond);
+diff --git a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp
+index 7cb3b6ec509f6d85ba25a729a7f9826bbe154bc9..f9c26e4713f4f419f8157bbabcfdbf14c0bf2e16 100644
+--- a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp
++++ b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.cpp
+@@ -17,6 +17,12 @@
+ bool asst::MultiCopilotTaskPlugin::_run()
+ {
+     LogTraceFunction;
++
++    // [PATCH 0004] 护栏专用模式：只做"代理指挥必须为 OFF"的判定/取消，返回失败即中止本局。
++    if (m_prts_guard_only) {
++        return ensure_prts_disabled();
++    }
++
+     if (m_copilot_configs.size() < (size_t)m_index_current) {
+         LogError << __FUNCTION__ << "configs size:" << m_copilot_configs.size() << ", current index:" << m_index_current
+                  << ", out of range";
+@@ -56,7 +62,10 @@ bool asst::MultiCopilotTaskPlugin::_run()
+         }
+     }
+ 
+-    ProcessTask(*this, { "NotUsePrts" }).set_ignore_error(true).set_retry_times(0).run();
++    // [PATCH 0003] 代理作战开关：显式判定 + 失败上报，不再是 ignore_error 静默跳过。
++    if (!ensure_prts_disabled()) {
++        return false;
++    }
+     if (config.is_raid) {
+         // 选择突袭模式
+         ret = ret && ProcessTask(*this, { "RaidConfirm", "ChangeToRaidDifficulty" }).set_retry_times(20).run();
+@@ -65,6 +74,69 @@ bool asst::MultiCopilotTaskPlugin::_run()
+     return ret;
+ }
+ 
++/// [PATCH 0003] 简报页"代理作战"开关的显式判定与取消。
++///
++/// 上游写法 `ProcessTask({ "NotUsePrts" }).set_ignore_error(true).set_retry_times(0)`
++/// 把三种截然不同的局面都归结为"静默通过"：
++///   1. 代理未开启：简报页按钮是 UsePrts 形态，NotUsePrts 匹配不上 → 跳过（预期）；
++///   2. 代理**已开启**：本应点掉，但点击未生效时同样静默通过 → Copilot 会在代理作战
++///      模式下开打，游戏用内置代理记录顶替玩家作业（数据工厂拿到的是错轨迹）；
++///   3. 页面异常/模板不匹配 → 同样静默。
++/// 本方法先判状态再动作，每次判定都通过 SubTaskExtraInfo(what=CopilotPrtsState) 上报；
++/// 判定为"已开启"时点掉并复验，3 次仍开启则发 SubTaskError(what=CopilotPrtsToggleFailed)
++/// 并让本次 Copilot 失败——即"失败可见，不允许静默跳过"。
++bool asst::MultiCopilotTaskPlugin::ensure_prts_disabled()
++{
++    const auto matched = [&](const std::string& task_name) {
++        PipelineAnalyzer match(ctrler()->get_image());
++        match.set_tasks({ task_name });
++        return match.analyze().has_value();
++    };
++    const auto notify = [&](const char* state_before, const char* state_after, const char* note) {
++        json::value info = basic_info_with_what("CopilotPrtsState");
++        info["details"]["state_before"] = state_before;
++        info["details"]["state_after"] = state_after;
++        info["details"]["note"] = note;
++        callback(AsstMsg::SubTaskExtraInfo, info);
++    };
++
++    bool agent_on = matched("NotUsePrts");
++    const bool agent_off_btn = matched("UsePrts");
++
++    if (!agent_on) {
++        if (agent_off_btn) {
++            Log.info(__FUNCTION__, "agent battle is OFF at briefing page (UsePrts button present)");
++            notify("off", "off", "use_prts_button_present");
++        }
++        else {
++            // 两者都不匹配 = 状态未知：保留上游"继续执行"的语义（避免误伤没有该按钮的
++            // 关卡），但必须可见，不能无声跳过。
++            Log.warn(__FUNCTION__, "PRTS toggle state unknown: neither UsePrts nor NotUsePrts matched");
++            notify("unknown", "unknown", "prts_button_not_found");
++        }
++        return true;
++    }
++
++    Log.warn(__FUNCTION__, "agent battle is ON at briefing page, turning it off");
++    for (int attempt = 0; attempt < 3 && agent_on; ++attempt) {
++        ProcessTask(*this, { "NotUsePrts" }).set_retry_times(0).run();
++        sleep(Config.get_options().task_delay);
++        agent_on = matched("NotUsePrts");
++    }
++
++    if (agent_on) {
++        Log.error(__FUNCTION__, "failed to turn off agent battle: NotUsePrts still matched after 3 attempts");
++        notify("on", "on", "toggle_failed");
++        json::value err = basic_info_with_what("CopilotPrtsToggleFailed");
++        err["details"]["reason"] = "agent battle still ON after clicking NotUsePrts 3 times";
++        callback(AsstMsg::SubTaskError, err);
++        return false;
++    }
++
++    notify("on", "off", "turned_off");
++    return true;
++}
++
+ bool asst::MultiCopilotTaskPlugin::navigate_to_stage(const std::string& stage_name)
+ {
+     // 优先检查是否存在对应活动关卡名的模板资源，如果存在则走模板匹配
+diff --git a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h
+index da2ee987c263f25d300166d5dd5234f755f271a5..4adc8286cf2eae1adb524a9896bedc53ac2d050e 100644
+--- a/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h
++++ b/src/MaaCore/Task/Miscellaneous/MultiCopilotTaskPlugin.h
+@@ -29,6 +29,9 @@ public:
+ 
+     void set_battle_task_ptr(const std::shared_ptr<BattleProcessTask>& ptr) { m_battle_task_ptr = ptr; }
+ 
++    /// [PATCH 0004] 护栏专用模式：_run() 只做代理指挥开关的判定/取消，不做导航与配置读取。
++    void set_prts_guard_only(bool value) { m_prts_guard_only = value; }
++
+ private:
+     virtual bool _run() override;
+     bool navigate_to_stage(const std::string& stage_name);
+@@ -40,9 +43,13 @@ private:
+     bool is_stage_detail_opened(const cv::Mat& image); // 检查关卡介绍是否已展开
+     bool confirm_stage_name(const cv::Mat& image, const std::string& stage_name);
+ 
++    /// [PATCH 0003] 简报页代理作战开关的显式判定与取消（取代上游的静默跳过）。
++    bool ensure_prts_disabled();
++
+     std::vector<MultiCopilotConfig> m_copilot_configs;
+     int m_index_current = 0; // 当前执行的索引
+     std::shared_ptr<BattleProcessTask> m_battle_task_ptr = nullptr;
+     int m_max_retry = 20;
++    bool m_prts_guard_only = false; // [PATCH 0004]
+ };
+ }

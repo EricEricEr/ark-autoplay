@@ -53,7 +53,7 @@ uv run pyright       # 类型检查
 
 ## 安全红线（铁律）
 
-- **不得 import 任何 bridge 仓库（ark-autoplay-maa-bridge，AGPL-3.0）代码**；感知状态与决策权重一律通过版本化协议与发布 artifact（ONNX 权重）消费。违反即 PR 打回。
+- 全项目已统一 AGPL-3.0，core/bridge/client 可相互 import（见 core/docs/adr/0004）；跨进程边界仍使用版本化协议。
 - **禁止提交游戏素材**：截图、立绘、地图、解包数据（版权归鹰角网络）一律不进仓库；测试样本只用合成数据。
 - 不提交密钥/凭据/个人路径；禁止内存读取、客户端修改类实现（本项目只做截图 + 模拟输入）。
 - 风险告知逻辑（risk_notice）不得改为可跳过；其变更从严评审（ReviewBench Accessibility 类）。

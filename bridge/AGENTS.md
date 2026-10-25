@@ -10,7 +10,7 @@ Arknights Autoplay 合并仓的 `bridge/` 子目录：**数据工厂 + 战场状
 ### 铁律（最高优先级）
 
 1. **执行环境仅限 MuMu 模拟器**（1920×1080 / DPI 320 基线）；其他端一律不支持。
-2. **不复制、不修改上游 MAA 源码**：经 `Asst.load()` 动态加载官方发行版、调用其公开 API。`maacore/` 与 `patches/` 当前为空；**若将来导入 MaaCore 源码，必须先按 `NOTICE.md` 粘贴上游附加条款原文**，且本目录随之成为上游衍生作品。
+2. **状态采集使用配套补丁 MaaCore**：上游 pin、完整补丁、重建方法见 `maacore/README.md` 与 `UPSTREAM.json`。已确认属于上游衍生作品、采用 AGPL-3.0；历史“附加条款待粘贴”结论已由 `NOTICE.md` 更正。普通官方 DLL 不能替代。
 3. 跨进程边界走版本化协议 / 落盘 JSON（为解耦与可复现性，**不再**是许可证隔离要求——全项目已统一 AGPL-3.0，见 `../core/docs/adr/0004-unify-agpl-monorepo.md`）。
 
 ## 目录布局
@@ -28,8 +28,7 @@ Arknights Autoplay 合并仓的 `bridge/` 子目录：**数据工厂 + 战场状
 │   ├── episode_writer.py    # 轨迹写出（protocol_version 戳 + 截图校验哈希）
 │   ├── squad_builder.py     # 按作业阵容自动编队；阵容随机化变体生成（占位 stub）
 │   └── instance_pool.py     # MuMu 多开实例池（2-3 并发，多开器管理；占位 stub）
-├── maacore/                 # MaaCore fork（保留上游 git 历史；当前为空，
-│                            #   v1WIP 纯 Python 驱动官方发行版，无需 fork，见 docs/adr/0001）
+├── maacore/                 # 上游 pin 与重建说明；本地 _src/ 不入库
 ├── patches/                 # 对 fork 的本地改动补丁（按序编号，不直接改 fork 树）
 ├── configs/
 │   ├── jobs_main_v1.json    # v1 主线低星作业队列（内嵌 MAA 形态作业 + prts.plus 署名）
@@ -41,14 +40,12 @@ Arknights Autoplay 合并仓的 `bridge/` 子目录：**数据工厂 + 战场状
 ├── tests/                   # 纯逻辑单测（转换器/写出器/几何表/像素判定）
 ├── .github/                 # CI、Copilot 指令、PR/Issue 模板
 ├── LICENSE                  # AGPL-3.0
-└── NOTICE.md                # 衍生作品声明 + 上游附加条款（首次导入源码时粘贴原文）
+└── NOTICE.md                # 衍生作品声明与已核实的上游许可/使用约束
 ```
 
 ### 运行时依赖（本机执行，非 CI）
 
-- **官方 MAA 发行版**（v6.18.0 实测）：`maa_driver` 经 `Asst.load` 动态加载其
-  Python 接口（`asst`），**只读使用安装目录，不复制/不修改任何内容**；
-  驱动期间 MAA GUI 保持关闭。MAA 目录路径入 `configs/instances/*.yaml`。
+- **配套补丁 MAA 运行时**：`maa_driver` 经 `Asst.load` 调用；DLL、resource、Python/asst 必须配套，见 `maacore/README.md`。驱动期间 MAA GUI 保持关闭。采集者以 `example.yaml` 创建 `*.local.yaml` 本地配置。
 - **MuMu 12 模拟器**（1920×1080 / DPI 320）+ 其自带 adb；实例地址入同上配置。
 - 数据落盘根（episodes/tmp/debug）由运行参数 `--work` 指定，属机器本地目录。
 
@@ -87,7 +84,7 @@ uv run pyright       # 类型检查（引入 pyright 后启用；当前未配置
 ## 安全红线（违反即打回）
 
 1. **禁止提交任何游戏素材**：游戏截图、立绘、地图素材、解包数据（ArknightsGameData）版权归鹰角网络，一律不进仓库（落盘数据目录已在 `.gitignore` 兜底，但仍须自查）。
-2. **隔离红线**：不得新增任何让 core / client 可以代码级引用本仓的入口（打包发布、公共符号导出到仓外接口等）。
+2. 全项目已统一 AGPL-3.0，允许 core/bridge/client 相互 import；跨进程协议仍版本化。实验性模型闭环与专家采集使用不同数据根。
 3. 自动化方式只做"截图 + 模拟输入"（ADB），不读内存、不改客户端。
 4. 文档与代码中禁止出现任何暗示使用本工具可规避游戏运营方检测或处罚的表述。
 5. 密钥、账号、cookie 等任何凭据不入库。

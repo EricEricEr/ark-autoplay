@@ -25,7 +25,7 @@
 | 目录 | 角色 | 说明 |
 |---|---|---|
 | [`core/`](core/) | **大脑** | 协议（状态/动作/轨迹，semver 版本化）、感知后处理、双轨决策模型、训练、评测、ONNX 导出 |
-| [`bridge/`](bridge/) | **数据工厂** | MAA 驱动、作业重放、轨迹落盘（当前经公开 `asst` API 调用官方 MAA 发行版） |
+| [`bridge/`](bridge/) | **数据工厂** | 补丁 MaaCore 驱动、作业重放、状态/动作/截图落盘；含实验性模型闭环运行器 |
 | [`client/`](client/) | **玩家端** | 屏幕抓取 + 本地 ONNX CPU 推理 + ADB 模拟输入 |
 
 ```text
@@ -34,31 +34,32 @@ MuMu模拟器 ──截图──► bridge(数据工厂) ──版本化协议�
 
 ## 当前进度
 
-项目处于 **M0 基建期**。**完整状态、待办清单与环境恢复步骤见 [STATUS.md](../STATUS.md)**（与本仓同级的交接文档）。
-
-一句话概括现状：**数据管线和重放链路已通，模型与训练全部是占位 stub；最大卡点是重放时未记录战场数值状态（费用/击杀/技力），导致行为克隆缺少输入。**
+项目处于 **M0 基建期**（2026-10-26 更新）。已实现真机状态采集、行为克隆训练、关卡级 K 折评测和实验性闭环；仍处于小数据链路验证阶段。完整口径见仓内 [项目状态](docs/STATUS.md) 和 [离线评测记录](core/docs/reports/2026-10-24-offline-v1-1.md)。
 
 | 部分 | 状态 |
 |---|---|
 | 数据管线（featvec / 关卡注册表 / **关卡静态特征** / 作业转换 / 练度分桶） | ✅ 已实现并验证 |
-| 重放链路（MAA 驱动 + 导航 + 轨迹落盘） | ✅ 真机跑通（5 条轨迹） |
-| 战场状态感知（费用/击杀/技力） | ❌ **卡点** |
-| 决策模型 / 训练 / 评测 / 导出 | ⬜ 全为占位 stub |
+| 重放链路（MAA 驱动 + 导航 + 轨迹落盘） | ✅ 已实现；依赖配套补丁运行时，长批次仍有导航/回主页失败 |
+| 战场状态采集 | ✅ 动作前采集费用、击杀、手牌、已部署信息；无敌人实时位置/完整技力 |
+| 模型 / 训练 / 离线评测 | ✅ v0/v1、SSL 对照、关卡级 K 折；当前状态监督为 176 局 / 1,161 对 |
+| 实验性闭环 | ✅ 0-1 / 0-2 / 0-3 两轮共 6 次记录为通关；仅作回路验证 |
+| 格子/朝向、通用自主通关 | ⚠️ 格子命中率低；尚无未见章节自主通关证据 |
+| 玩家端 / ONNX 发行 | ⬜ 尚未形成可交付的完整玩家产品 |
 
 ## 快速开始
 
-```bash
-# 各子目录独立管理依赖（三套 venv）
-cd core   && uv sync && uv run pytest -q    # 48 passed
-cd bridge && uv sync && uv run pytest -q    # 15 passed
-cd client && uv sync && uv run pytest -q    # 7 passed
+**协助采集数据从 [采集者指南](bridge/docs/collecting.md) 开始。** 只采集需要 Windows 10/11 x64、MuMu（1920×1080 / DPI 320）、Python 3.12 + uv，以及 [配套补丁 MAA 运行时](bridge/maacore/README.md)。无需安装训练用 torch 或下载模型权重。
 
-# 数据管线（需先准备数据根，布局见 core/configs/data.yaml 头部注释）
-export ARK_DATA_ROOT=/path/to/ark_data_root
-cd core && uv run python -m ark_core.datapipe.build all
+```powershell
+git clone https://github.com/EricEricEr/ark-autoplay.git
+cd ark-autoplay/bridge
+uv sync --frozen
+uv run python -m bridge.replay_controller --help
 ```
 
-完整环境要求（MuMu 12 / MAA 发行版 / Python 3.12 + uv）与数据资产清单见 [STATUS.md](../STATUS.md) §1–§2。
+`--help` 不连接游戏。正式采集前按指南填写本机实例配置，并取得与账号匹配的作业队列。普通官方 MAA 不导出本项目使用的 `BattleState`；克隆仓库不会自动获得补丁二进制或游戏数据。
+
+各子目录独立管理依赖；开发检查为 `uv run pytest -q`、`uv run ruff check`，core/client 另运行 `uv run pyright`。core 训练依赖通过 `uv sync --group train` 安装。数据管线见 [core README](core/README.md)。
 
 ## 素材红线
 

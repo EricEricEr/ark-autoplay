@@ -812,7 +812,9 @@ def finetune_smoke(
 
     blob = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     sd = blob["state_dict"]
-    _records, featvec_np, vocab_tokens, state_dim = load_records_v1(downstream_npz)
+    _records, featvec_np, vocab_tokens, state_dim, grid_channels = load_records_v1(
+        downstream_npz
+    )
 
     from ..models.track_a.policy_v1 import TrackAPolicyV1
 
@@ -822,6 +824,7 @@ def finetune_smoke(
         vocab_size=Vocab(extra_tokens=vocab_tokens).size,
         max_squad=MAX_SQUAD,
         state_dim=state_dim,
+        grid_channels=grid_channels,
         d_model=cfg.d_model,
         n_heads=cfg.n_heads,
         n_layers=cfg.n_layers,

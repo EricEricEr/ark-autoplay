@@ -125,6 +125,7 @@ def _do_build(
     processed = _expand(d["processed_dir"])
     episodes_root = _expand(d["episodes_root"])
     out = _expand(d["dataset_npz"])
+    grid_channels = int(d.get("grid_channels", 5))
 
     t0 = time.time()
     counts = scan_stage_counts(episodes_root)
@@ -157,6 +158,7 @@ def _do_build(
             limit=d.get("limit"),
             vocab_top_k=int(d.get("vocab_top_k", 256)),
             exclusion=exclusion,
+            grid_channels=grid_channels,
         )
         n = int(delta["total_records"])
     else:
@@ -168,9 +170,12 @@ def _do_build(
             limit=d.get("limit"),
             vocab_top_k=int(d.get("vocab_top_k", 256)),
             exclusion=exclusion,
+            grid_channels=grid_channels,
         )
     rep = {
         "n_records": n,
+        "grid_channels": grid_channels,
+        "stages_no_route_feat": stats.n_stages_no_route_feat,
         "vocab_size": vocab.size,
         "vocab_tokens": vocab.extra_tokens,
         "elapsed_s": round(time.time() - t0, 1),

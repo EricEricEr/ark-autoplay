@@ -50,14 +50,30 @@ _DIR_NONE_IDX = DIRECTIONS.index("None")
 
 def load_records_v1(
     npz_path: Path,
-) -> tuple[list[dict[str, Any]], np.ndarray, list[str], int]:
-    """读回 v1 数据集 npz → (记录列表, featvec 矩阵, 词表 token 列表, 状态维数)。"""
+) -> tuple[list[dict[str, Any]], np.ndarray, list[str], int, int]:
+    """读回 v1 数据集 npz → (记录列表, featvec 矩阵, 词表 token 列表, 状态维数,
+    格子通道数)。
+
+    老 npz（v1/v2 三件套）无 ``grid_channels`` 键，按 GRID_CHANNELS=5 回落；
+    返回的通道数必须与实际 record 的 cells 末维一致（否则本函数直接报错，
+    不把不一致带到训练侧）。
+    """
     z = np.load(npz_path, allow_pickle=True)
+    grid_channels = int(z["grid_channels"]) if "grid_channels" in z else GRID_CHANNELS
+    records = list(z["records"])
+    if records:
+        actual = int(records[0]["cells"].shape[-1])
+        if actual != grid_channels:
+            raise ValueError(
+                f"{npz_path} 元数据 grid_channels={grid_channels} 与 record "
+                f"cells 通道 {actual} 不一致（npz 被混淆，请重新 build）"
+            )
     return (
-        list(z["records"]),
+        records,
         z["featvec"],
         [str(x) for x in z["vocab"]],
         int(z["state_dim"]),
+        grid_channels,
     )
 
 
@@ -78,15 +94,20 @@ def split_records(
 def collate_v1(
     records: list[dict[str, Any]], featvec: np.ndarray, state_dim: int
 ) -> dict[str, Any]:
-    """把一批变长记录补齐成张量（mask: True=有效）；比 v0 多 ``state`` 一项。"""
+    """把一批变长记录补齐成张量（mask: True=有效）；比 v0 多 ``state`` 一项。
+
+    cells 通道数由 record 自身末维派生（5 = v1 地形口径，8 = v1.1 路线几何），
+    不再假定协议常量 GRID_CHANNELS。
+    """
     b = len(records)
     n_cells = max(len(r["cells"]) for r in records)
+    n_cell_channels = max(int(r["cells"].shape[-1]) for r in records)
     n_spawns = max(r["spawns"].shape[0] for r in records)
     n_squad = max(len(r["squad_idx"]) for r in records)
     t_max = max(len(r["type"]) for r in records)
 
     arr = dict(
-        cells=np.zeros((b, n_cells, GRID_CHANNELS), dtype=np.float32),
+        cells=np.zeros((b, n_cells, n_cell_channels), dtype=np.float32),
         cell_pos=np.zeros((b, n_cells, 2), dtype=np.float32),
         cell_mask=np.zeros((b, n_cells), dtype=np.bool_),
         spawns=np.zeros((b, n_spawns, 4), dtype=np.float32),
@@ -339,7 +360,7 @@ def train(
     ``resume_from``：增量续训的旧 checkpoint 路径（strict 加载，词表/维度不符即报错）。
     """
     set_seed(cfg.seed)
-    records, featvec, vocab_tokens, state_dim = load_records_v1(npz_path)
+    records, featvec, vocab_tokens, state_dim, grid_channels = load_records_v1(npz_path)
     vocab = Vocab(extra_tokens=vocab_tokens)
 
     train_recs, hold_recs = split_records(records, holdout_stages)
@@ -380,11 +401,12 @@ def train(
         n_layers=cfg.n_layers,
         n_dec_layers=cfg.n_dec_layers,
         dropout=cfg.dropout,
+        grid_channels=grid_channels,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     log(
         f"[model] 参数量 {n_params/1e6:.2f}M  vocab={vocab.size}  "
-        f"state_dim={state_dim}  device={device}"
+        f"state_dim={state_dim}  grid_channels={grid_channels}  device={device}"
     )
     if resume_from is not None:
         # 续训：加载旧权重，优化器/调度器重新起步（strict=True，形状不符直接报错）
@@ -460,6 +482,7 @@ def train(
             "vocab": vocab_tokens,
             "featvec_dim": int(featvec.shape[1]),
             "state_dim": state_dim,
+            "grid_channels": grid_channels,
             "n_params": n_params,
             "holdout_stages": sorted(holdout_stages),
             "best_epoch": best_epoch,

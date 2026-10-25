@@ -1,0 +1,47 @@
+# track_a_v1 在线推理胶水配置（见 src/ark_core/infer/track_a_v1.py 模块 docstring）。
+#
+# 诚实口径：配套 checkpoint（<root>/runs/imitation_v1/track_a_v1.pt）是约 1k
+# 状态-动作对上的链路冒烟模型，本配置驱动的是「真机 battle_state → 模型四头
+# logits → 合法性过滤 → 合法 MAA 作业动作」的在线链路冒烟，**不作自主作战
+# 能力证据**、不许调参过拟合真实 record 的输出数字。
+#
+# 路径红线同 imitation_v1.yaml：机器路径不入库，全部以 ${ARK_ML_ROOT} 为根展开。
+#   PowerShell:  $env:ARK_ML_ROOT = "E:\path\to\your\data-validation"
+
+paths:
+  checkpoint: "${ARK_ML_ROOT}/runs/imitation_v1/track_a_v1.pt"
+  dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v1.npz"
+  # stagefeat / featvec parquet 与 npz 同目录（processed/），from_stage_id 自动取
+  # npz_path.parent；不一致时才需显式给 processed_dir。
+
+decision:
+  interval_s: 1.0     # 决策节拍（秒）：两次 greedy_step 的最小间隔，
+                      # 本模块只携带逻辑值，由调用方（闭环驱动器）执行
+  total_proxy: 30     # state_feat step 维（t/total）的 total 代理：
+                      # 在线不知作业总长，取训练分布周边常数（作业动作数常见 ~30）
+  cost_margin: 0.0    # 费用合法性余量：hand.cost <= costs + cost_margin 视为可部署
+
+action_filter:
+  allow_speedup: true       # speed（倍速切换）动作开关
+  allow_bullet_time: true   # bullet_time（子弹时间）动作开关
+  allow_vocab_targets: true # 全局词表目标（支援装置等）整体放行：
+                            # 无法从 battle_state 核验，关掉则只允许编队槽位目标。
+                            # 注：闭环里程碑由 bridge 侧 loop_milestone_v1.json 的
+                            # infer_overrides 覆盖为 false（台账状态无法核验词表
+                            # 目标，为不存在的目标下 Deploy 每条空等 ~60s）
+
+device: cpu   # 冒烟模型参数仅数 M，真机在线 CPU 足够
+
+# 推理噪声闸门（v1.1）：真机 6 局闭环实测速写 = 倍速反复切换 + 误撤退；
+# 本条全部默认开启，关闭某项即该规则回退 v1 行为（规则语义详注见
+# src/ark_core/infer/track_a_v1.py 的 InferConfig / 模块 docstring）。
+noise_gate:
+  speed_semantic_gate: true   # 倍速语义闸门：次数不限、只在必要时切换——
+                              # 无合法有意义动作（纯等待死亡时间）才允许升 2x；
+                              # 正要下发真实动作且当前 2x 时先降 1x
+  slow_for_action: true       # 下发 deploy/skill/retreat 前优先降到 1x
+  speed_min_interval_s: 5.0   # 两次换速最小间隔（迟滞防抖，按步序×决策节拍折算）
+  retreat_min_logit_margin: 1.0   # 撤退仅在 retreat logit − 其余类型最高 logit
+                                  # ≥ 本余量时允许（误撤退是实测主要噪声之一）
+  retreat_min_interval_steps: 3   # 两次撤退最小步数间隔（自回归连撤防抖）
+  repeat_guard: 3             # 同一 (type, 目标名) 连续出现 N 次即屏蔽该类重复

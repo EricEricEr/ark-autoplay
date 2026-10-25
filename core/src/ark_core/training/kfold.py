@@ -123,7 +123,7 @@ def _build_pretrained_snapshot(
 
     if not ckpt_path.is_file():
         raise SystemExit(f"pretrain_ckpt 不存在: {ckpt_path}")
-    _records, featvec_np, vocab_tokens, state_dim = load_records_v1(npz_path)
+    _records, featvec_np, vocab_tokens, state_dim, grid_channels = load_records_v1(npz_path)
     vocab = Vocab(extra_tokens=vocab_tokens)
     blob = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     model = TrackAPolicyV1(
@@ -131,6 +131,7 @@ def _build_pretrained_snapshot(
         vocab_size=vocab.size,
         max_squad=MAX_SQUAD,
         state_dim=state_dim,
+        grid_channels=grid_channels,
         d_model=cfg.d_model,
         n_heads=cfg.n_heads,
         n_layers=cfg.n_layers,
@@ -181,7 +182,7 @@ def run_kfold(
     """
     from .imitate_v1 import load_records_v1  # 延迟导入，保持模块可被无 torch 环境加载文档
 
-    records, _featvec, _vocab_tokens, _state_dim = load_records_v1(npz_path)
+    records, _featvec, _vocab_tokens, _state_dim, _gc = load_records_v1(npz_path)
     folds = make_folds([str(r["stage_id"]) for r in records], k, seed)
     log(f"[kfold] {len(records)} 局 → k={k} 折；各折 holdout 关卡数: "
         f"{[len(f) for f in folds]}")

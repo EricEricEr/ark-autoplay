@@ -116,11 +116,15 @@ class BuildStats:
 
 
 def _load_stagefeat(path: Path) -> dict[str, dict[str, Any]]:
-    """读 stagefeat.parquet → {stage_id: row}。"""
-    t = pq.read_table(
-        path,
-        columns=["stage_id", "rows", "cols", "grid", "spawns", "opt_initial_cost"],
-    )
+    """读 stagefeat.parquet → {stage_id: row}。
+
+    ``routes`` 列是 v1.1 路线几何特征（``datapipe.routefeat``）的原料：存在才带，
+    缺席（合成测试 parquet / 旧产物）时行内不落该键，消费方按空路线处理。
+    """
+    want = ["stage_id", "rows", "cols", "grid", "spawns", "opt_initial_cost"]
+    schema_cols = set(pq.read_schema(path).names)
+    cols = want + (["routes"] if "routes" in schema_cols else [])
+    t = pq.read_table(path, columns=cols)
     out: dict[str, dict[str, Any]] = {}
     for r in t.to_pylist():
         out[str(r["stage_id"])] = r

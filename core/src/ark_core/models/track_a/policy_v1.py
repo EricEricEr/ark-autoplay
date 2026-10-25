@@ -22,7 +22,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from ...protocol.action import ACTION_TYPES, DIRECTIONS
+from ...protocol.action import ACTION_TYPES, DIRECTIONS, GRID_CHANNELS
 from .policy import EntityEncoder
 
 
@@ -44,17 +44,21 @@ class TrackAPolicyV1(nn.Module):
         n_layers: int = 4,
         n_dec_layers: int = 2,
         dropout: float = 0.1,
+        grid_channels: int = GRID_CHANNELS,
     ) -> None:
         super().__init__()
         self.d_model = d_model
         self.vocab_size = vocab_size
         self.max_squad = max_squad
         self.state_dim = state_dim
+        self.grid_channels = grid_channels
         self.n_types = len(ACTION_TYPES)
         self.n_dirs = len(DIRECTIONS)
         self.n_targets = 1 + vocab_size + max_squad
 
-        self.encoder = EntityEncoder(d_model, n_heads, n_layers, dropout)
+        self.encoder = EntityEncoder(
+            d_model, n_heads, n_layers, dropout, grid_channels=grid_channels
+        )
 
         # 干员 featvec → d_model（编队 token 与历史干员共用，同 v0）
         self.op_proj = nn.Sequential(

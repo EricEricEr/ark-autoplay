@@ -47,12 +47,23 @@ class EntityEncoder(nn.Module):
 
     组间用可学习 **type embedding** 区分；格子自带 (r,c) 归一化坐标（等价于空间位置
     编码），出怪自带归一化时刻，两者都无需额外位置编码。
+
+    ``grid_channels``：格子 token 的特征通道数（默认 GRID_CHANNELS=5；v1.1 的
+    8 通道数据集由 policy_v1 透传 8；forward 会拒擂通道数不符的输入）。
     """
 
-    def __init__(self, d_model: int, n_heads: int, n_layers: int, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        n_layers: int,
+        dropout: float = 0.1,
+        grid_channels: int = GRID_CHANNELS,
+    ) -> None:
         super().__init__()
         self.d_model = d_model
-        self.cell_proj = nn.Linear(CELL_IN, d_model)
+        self.grid_channels = grid_channels
+        self.cell_proj = nn.Linear(grid_channels + 2, d_model)
         self.spawn_proj = nn.Linear(SPAWN_IN, d_model)
         self.type_emb = nn.Embedding(N_GROUPS, d_model)
         self.norm_in = nn.LayerNorm(d_model)
@@ -79,6 +90,11 @@ class EntityEncoder(nn.Module):
         squad_mask: Tensor,
     ) -> tuple[Tensor, int, int, int]:
         """返回 (编码序列 [B,L,D], n_cells, n_spawns, n_squad)。"""
+        if cells.shape[-1] != self.grid_channels:
+            raise ValueError(
+                f"格子通道数不符：构造为 {self.grid_channels}，"
+                f"forward 收到 {cells.shape[-1]}"
+            )
         n_cells = cells.shape[1]
         n_spawns = spawns.shape[1]
 

@@ -53,6 +53,28 @@ def _sf() -> dict:
     return {"stage_id": "main_99-01", "rows": ROWS, "cols": COLS, "grid": grid, "spawns": []}
 
 
+def _sf_with_route() -> dict:
+    """带路线几何的合成关卡：起点 (0,0)，终点 (7,11)，单行直线路线。"""
+    sf = _sf()
+    grid = sf["grid"]
+    for r in range(ROWS):
+        for c in range(COLS):
+            i = (r * COLS + c) * 5
+            grid[i + 3] = int((r, c) == (0, 0))
+            grid[i + 4] = int((r, c) == (7, 11))
+    sf["routes"] = [
+        {
+            "mode": 0,
+            "start": [0, 0],
+            "end": [7, 11],
+            "n_points": 2,
+            "points": [0, 0, 7, 11],
+            "wait_ms": [],
+        }
+    ]
+    return sf
+
+
 def _bs(cost: float, kills: float = 0.0, total_kills: float = 10.0) -> dict:
     """合成一条 battle_state（cost 可区分用于校验对齐位置）。"""
     return {
@@ -80,6 +102,8 @@ def _encode(
     stats: BuildStatsV1,
     vocab: Vocab | None = None,
     events: list[dict] | None = None,
+    sf: dict | None = None,
+    grid_channels: int = 5,
 ) -> dict | None:
     """本文件 encode_episode 调用糖（全部合成输入，不落盘）。"""
     return encode_episode(
@@ -88,12 +112,73 @@ def _encode(
         job=job,
         battle_states=states,
         action_events=events,
-        sf=_sf(),
+        sf=sf or _sf(),
         name2cid=NAME2CID,
         featvec_idx=FEATVEC_IDX,
         vocab=vocab or Vocab(),
         stats=stats,
+        grid_channels=grid_channels,
     )
+
+
+# ---------------------------------------------------------------- v1.1 路线几何通道
+
+
+def test_grid_channels_v1_1_appends_route_feats() -> None:
+    """grid_channels=8：前 5 通道与 v1 完全一致，后 3 通道是路线几何派生量。"""
+    stats = BuildStatsV1()
+    rec8 = _encode(
+        _job([{"type": "Deploy", "name": "风笛", "location": [1, 1], "direction": "Up"}]),
+        [_bs(1.0)],
+        stats,
+        sf=_sf_with_route(),
+        grid_channels=8,
+    )
+    assert rec8 is not None
+    assert rec8["cells"].shape == (ROWS * COLS, 8)
+    # 前 5 通道与 5 通道口径逐格一致
+    stats5 = BuildStatsV1()
+    rec5 = _encode(
+        _job([{"type": "Deploy", "name": "风笛", "location": [1, 1], "direction": "Up"}]),
+        [_bs(1.0)],
+        stats5,
+        sf=_sf_with_route(),
+    )
+    assert rec5 is not None
+    assert rec5["cells"].shape == (ROWS * COLS, 5)
+    assert np.array_equal(rec8["cells"][:, :5], rec5["cells"])
+    # 路线格子：起点 dist_start=0 / dist_end=1；终点反之；on_route=1
+    start = rec8["cells"][0 * COLS + 0, 5:]
+    end = rec8["cells"][7 * COLS + 11, 5:]
+    assert start.tolist() == [pytest.approx(0.0), pytest.approx(1.0), 1.0]
+    assert end.tolist() == [pytest.approx(1.0), pytest.approx(0.0), 1.0]
+    assert stats.n_stages_no_route_feat == 0
+
+
+def test_grid_channels_v1_1_no_routes_zero_padded() -> None:
+    """无路线几何的关：3 通道全零 + 计数（剿灭等无路线关的降级口径）。"""
+    stats = BuildStatsV1()
+    rec = _encode(
+        _job([{"type": "Deploy", "name": "风笛", "location": [1, 1], "direction": "Up"}]),
+        [_bs(1.0)],
+        stats,
+        grid_channels=8,
+    )
+    assert rec is not None
+    assert rec["cells"].shape == (ROWS * COLS, 8)
+    assert float(rec["cells"][:, 5:].sum()) == 0.0
+    assert stats.n_stages_no_route_feat == 1
+
+
+def test_grid_channels_rejects_unknown_value() -> None:
+    """只支持 5/8：其它值报错而不是静默渲染。"""
+    with pytest.raises(ValueError, match="grid_channels"):
+        _encode(
+            _job([{"type": "SpeedUp"}]),
+            [_bs(1.0)],
+            BuildStatsV1(),
+            grid_channels=6,
+        )
 
 
 # ---------------------------------------------------------------- 对齐与截断

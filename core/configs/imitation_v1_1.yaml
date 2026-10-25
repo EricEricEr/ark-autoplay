@@ -1,0 +1,70 @@
+# 状态-动作行为克隆 v1.1 实验配置：路线几何格子通道（5→8）+ DIR 损失 masked 默认
+#
+# 与 v1（configs/imitation_v1.yaml）的差异（两处，其余口径原样沿用）：
+# 1. data.grid_channels: 8 —— record 的 cells 追加 routefeat 派生的 3 条路线通道
+#    （距敌方出怪点 / 距我方防守终点的归一化步行距离、是否在敌方行进路线格，
+#    见 src/ark_core/datapipe/routefeat.py；无路线几何的关 3 通道全零并进
+#    build_report 的 stages_no_route_feat）；产物独立命名 state_action_v1_1.npz，
+#    v1 三件套不动；前 5 通道与 v1 逐格一致（单测在案）。
+# 2. training.w_dir: 0.0 —— DIR 损失 masked 为默认（v3 masked 臂实验证明关掉 DIR
+#    损失不伤其它头：type 0.901 / F1 0.542 vs full 0.900 / 0.539）；dir_acc 仍照常
+#    上报，关的只是损失项。
+#
+# 数据池与 v2/v3 完全同口径（exclude_by_result + scan 名单；2026-10-24 实测
+# applied_to_valid_pool=0，即 176 局 / 1161 对与 v1/v2 全集相同），
+# holdout_stages 置空沿用 v1 的确定性自动规则（字典序降序 + 局数门槛，不许随机）。
+#
+# 诚实口径同 v1：~1k 状态-动作对上的链路冒烟验证，不作能力证据；对外只报 holdout。
+# 路径解析（红线：机器路径不入库）同 imitation_v1.yaml，全部以 ${ARK_ML_ROOT} 展开。
+
+experiment:
+  name: imitation_v1_1
+  seed: 42
+  device: cuda
+
+data:
+  root: "${ARK_ML_ROOT}"
+  processed_dir: "${ARK_ML_ROOT}/processed"
+  episodes_root: "${ARK_ML_ROOT}/../ark-data/episodes"   # 真机 episodes（只读）
+  dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v1_1.npz"   # v1.1 独立产物
+  grid_channels: 8       # 5 = v1 地形口径；8 = 追加路线几何 3 通道
+  vocab_top_k: 256
+  limit: null            # 调试用：只取前 N 局（null = 全量）
+
+  # 清洗口径与 v2/v3 相同，保证数据池一致（当前批次实测无有效局被剔，见 build_report）
+  exclude_by_result: true
+  exclude_scan_file: "bridge/debug/scan_blockers_full.txt"
+
+  # 关卡级留出沿用 v1 自动规则（2026-10-24 实扫 209 局有效集 →
+  # 期望解析为 main_02-03 / main_02-02 / main_01-12 / main_01-09，
+  # 与 runs/imitation_v1 的 build_report 一致，解析结果以本次 build 复核为准）
+  holdout_stages: []
+  holdout_min_eps: 3     # holdout 关卡的有效局数下限（复核 + 自动选取共用）
+  holdout_auto_n: 4      # holdout_stages 为空时自动选取的关卡数
+
+model:
+  hidden_dim: 256
+  num_layers: 4
+  num_dec_layers: 2
+  num_heads: 8
+  dropout: 0.1
+
+training:
+  stage: imitate_v1
+  epochs: 20
+  batch_size: 16
+  lr: 3.0e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_train_batches: 64   # train 档评测抽样（holdout 恒全量）
+  ckpt_name: track_a_v1_1.pt   # 独立产物名，避免与 v1 的 track_a_v1.pt 混淆
+  # 损失权重：cell/dir 只在 deploy 上计算（沿用 v0 imitate.compute_loss）
+  w_type: 1.0
+  w_target: 1.0
+  w_cell: 1.0
+  w_dir: 0.0   # DIR 损失 masked（dir_acc 照常上报；同 kfold 的 dir_loss=masked）
+
+evaluation:
+  runs_dir: "${ARK_ML_ROOT}/runs"
+  # 对外只报 holdout；train 档仅用于诊断过拟合
+  report_tiers: [holdout]

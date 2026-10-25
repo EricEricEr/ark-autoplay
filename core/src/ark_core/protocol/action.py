@@ -48,3 +48,9 @@ DIR_ALIASES: dict[str, str] = {
 GRID_CHANNELS = 5
 """关卡格子通道数（与 datapipe.stagefeat 的 grid 编码严格一致）：
 高度 / 可部署类型 / 是否可部署 / 起点 / 终点。"""
+
+GRID_CHANNELS_V1_1 = 8
+"""v1.1 数据集（state_action_v1_1）的格子通道数：基础 5 通道 + 路线几何 3 通道
+（距敌方出怪点归一化距离 / 距我方防守终点归一化距离 / 是否在敌方行进路线格，
+派生公式见 ``datapipe.routefeat``）。基础 5 通道布局不变、追加在后，ckpt/npz
+meta 记 ``grid_channels`` 供推理侧自检。"""

@@ -11,10 +11,10 @@
 - 动作真值取自**作业文件**（``actions`` 列表）；``battle_states.jsonl`` 第 i 条
   是第 i 个被执行动作**之前**的状态（bridge patch 0001 逐动作前发出）。
 
-配对规则（2026-10-19 全量 151 局实测，0 例错位）
+配对规则（控制回调已按 2026-10-26 实录修正）
 -------------------------------------------------
-1. 作业中的 ``SkillDaemon``（自动开技能开关）**不产生** CopilotAction 事件与
-   battle_state，必须先过滤；
+1. ``SkillDaemon`` 不作为训练动作，但运行时可能报告其 CopilotAction 和终局
+   状态；转换包通过 ``conversion.paired_state_indices`` 显式选择配对状态；
 2. 过滤后作业动作列表与 battle_states 逐位对齐；用 CopilotAction 事件流的
    ``details.details.action`` 做逐位类型校验（Deploy→Deploy、SpeedUp→SwitchSpeed、
    Skill→UseSkill、Retreat→Retreat、BulletTime→BulletTime），不一致计入异常统计；
@@ -115,9 +115,18 @@ STATE_DIM = 12
 """战场状态向量维数（定义见模块 docstring 的索引表）。"""
 
 STATE_NAMES: tuple[str, ...] = (
-    "cost", "kills_ratio", "in_speedup", "hand_size", "n_hand_available",
-    "n_hand_cooling", "mean_hand_cost", "n_deployed", "deploy_ratio",
-    "step", "remain_hand_cost", "reserved",
+    "cost",
+    "kills_ratio",
+    "in_speedup",
+    "hand_size",
+    "n_hand_available",
+    "n_hand_cooling",
+    "mean_hand_cost",
+    "n_deployed",
+    "deploy_ratio",
+    "step",
+    "remain_hand_cost",
+    "reserved",
 )
 """``state_feat`` 各维名字（与模块 docstring 索引表一一对应，随 npz 落盘备查）。"""
 
@@ -143,7 +152,7 @@ JOB_TYPE_TO_ACTION: dict[str, str] = {
 """作业动作 type → 协议动作类型的映射（编码表仍由 protocol 层单一提供）。"""
 
 SKIP_JOB_TYPES: frozenset[str] = frozenset({"SkillDaemon"})
-"""过滤后不参与配对的作业动作（不产生 CopilotAction / battle_state，实测）。"""
+"""不作为训练动作；运行时仍可能为控制动作报告事件和终局状态。"""
 
 _COPILOT_ACTION_OF: dict[str, str] = {
     "Deploy": "Deploy",
@@ -165,9 +174,7 @@ EXCLUDE_BATTLE_RESULTS: frozenset[str] = frozenset({"lost", "unknown"})
 _SCAN_HIT_RE = re.compile(r"HIT\s+(\S+?)/\S+?:(\w+)")
 """blocker 扫描清单的 HIT 行：``HIT <job目录>/<截图>:<原因>``（各区段的 HIT 都算）。"""
 
-SCAN_EXCLUDE_REASONS: frozenset[str] = frozenset(
-    {"settle_lost", "prts_level_low", "sync_updated"}
-)
+SCAN_EXCLUDE_REASONS: frozenset[str] = frozenset({"settle_lost", "prts_level_low", "sync_updated"})
 """名单侧排除原因白名单（判负结算 / 等级过低横幅 / 同步弹窗）。清单里目前只出现
 前两类（2026-10-20 实测：37 行 HIT，去重后 33 个 job = settle_lost 29 +
 prts_level_low 4，sync_updated 0）；解析时不做白名单过滤——HIT 行本身就是
@@ -340,9 +347,7 @@ def scan_stage_counts(episodes_root: Path) -> dict[str, int]:
     return counts
 
 
-def choose_holdout_stages(
-    counts: dict[str, int], n: int, min_eps: int
-) -> list[str]:
+def choose_holdout_stages(counts: dict[str, int], n: int, min_eps: int) -> list[str]:
     """确定性选取 holdout 关卡（**不许随机**）。
 
     规则：候选 = 局数 ``>= min_eps`` 的关卡，按关卡 id **字典序降序**（main 章节号
@@ -386,7 +391,12 @@ def _check_alignment(
     stats: BuildStatsV1,
 ) -> None:
     """逐位类型校验：过滤后作业动作 vs CopilotAction 事件流（只校验，不取参）。"""
-    ca = [e for e in events if (e.get("details") or {}).get("what") == "CopilotAction"]
+    ca = [
+        e
+        for e in events
+        if (e.get("details") or {}).get("what") == "CopilotAction"
+        and ((e.get("details") or {}).get("details") or {}).get("action") != "SkillDaemon"
+    ]
     for i, a in enumerate(actions[: len(ca)]):
         got = str(((ca[i].get("details") or {}).get("details") or {}).get("action"))
         if _COPILOT_ACTION_OF.get(str(a.get("type"))) != got:
@@ -494,8 +504,12 @@ def encode_episode(
     if spawns_raw:
         sp = np.asarray(
             [
-                [float(s.get("t_ms") or 0) / 1000.0, float(s.get("wave") or 0),
-                 float(s.get("route") or 0), 1.0 if s.get("enemy_matched") else 0.0]
+                [
+                    float(s.get("t_ms") or 0) / 1000.0,
+                    float(s.get("wave") or 0),
+                    float(s.get("route") or 0),
+                    1.0 if s.get("enemy_matched") else 0.0,
+                ]
                 for s in spawns_raw
             ],
             dtype=np.float32,
@@ -622,6 +636,27 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def read_episode_states(ep_dir: Path, meta: dict[str, Any]) -> list[dict[str, Any]]:
+    """转换包按显式来源索引选取配对状态，原始文件保持字节不变。"""
+    states = _read_jsonl(ep_dir / "battle_states.jsonl")
+    conversion = meta.get("conversion") or {}
+    if not isinstance(conversion, dict):
+        raise TypeError("conversion 必须为对象")
+    indices = conversion.get("paired_state_indices")
+    if indices is None:
+        return states
+    if (
+        not isinstance(indices, list)
+        or any(
+            not isinstance(i, int) or isinstance(i, bool) or i < 0 or i >= len(states)
+            for i in indices
+        )
+        or indices != sorted(set(indices))
+    ):
+        raise TypeError("paired_state_indices 非法")
+    return [states[i] for i in indices]
+
+
 def build_dataset(
     processed_dir: Path,
     episodes_root: Path,
@@ -658,7 +693,7 @@ def build_dataset(
         try:
             meta = _read_json(ep_dir / "episode.json")
             job = _read_json(resolve_episode_job(ep_dir, meta))
-            states = _read_jsonl(ep_dir / "battle_states.jsonl")
+            states = read_episode_states(ep_dir, meta)
             ev_path = ep_dir / "action_events.jsonl"
             events = _read_jsonl(ev_path) if ev_path.is_file() else []
             return meta, job, states, events
@@ -829,7 +864,7 @@ def build_dataset_delta(
             continue
         try:
             job = _read_json(resolve_episode_job(ep_dir, meta))
-            states = _read_jsonl(ep_dir / "battle_states.jsonl")
+            states = read_episode_states(ep_dir, meta)
             ev_path = ep_dir / "action_events.jsonl"
             events = _read_jsonl(ev_path) if ev_path.is_file() else []
         except (OSError, KeyError, json.JSONDecodeError, TypeError):

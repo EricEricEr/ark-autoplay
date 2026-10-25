@@ -584,6 +584,26 @@ def test_build_dataset_accepts_moved_bundles_with_local_job(tmp_path: Path) -> N
     assert n == 1 and stats.n_kept == 1 and stats.drop_bad_files == 0
 
 
+def test_converted_control_state_indices_are_applied_before_encoding(tmp_path: Path) -> None:
+    """控制状态不能混入下一步真实动作，转换包原始文件无需改写。"""
+    root, processed = tmp_path / "episodes", tmp_path / "processed"
+    _write_min_processed(processed)
+    name = "synthetic-control"
+    _mk_real_episode(root, "main_99-01", name, tmp_path)
+    ep = root / "main_99-01" / name
+    meta = json.loads((ep / "episode.json").read_text(encoding="utf-8"))
+    meta["conversion"] = {"paired_state_indices": [0, 2]}
+    (ep / "episode.json").write_text(json.dumps(meta), encoding="utf-8")
+    (ep / "battle_states.jsonl").write_text(
+        "\n".join(json.dumps(_bs(v)) for v in (10, 99, 20)) + "\n", encoding="utf-8",
+    )
+    output = tmp_path / "converted.npz"
+    _v, _stats, n = build_dataset(processed, root, out_path=output, holdout_stages=set())
+    assert n == 1
+    record = np.load(output, allow_pickle=True)["records"][0]
+    np.testing.assert_allclose(record["state_feat"][:, 0], [0.1, 0.2])
+
+
 def test_build_dataset_applies_exclusion(tmp_path: Path) -> None:
     """集成：排除集在 build 主循环生效且计数；``exclusion=None`` 时 v1 行为不回归。"""
     root = tmp_path / "episodes"

@@ -24,3 +24,5 @@
 maa_runtime_patched/
 ark-data/
 ark-data-loop/
+# Runtime junction aliases must not expose MAA logs or captures to Git.
+**/arkmaa_*/

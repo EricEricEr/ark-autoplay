@@ -105,8 +105,11 @@ def paired_samples(
     unknown = {a.get("type") for a in raw_actions} - set(ACTION_EVENT) - {"SkillDaemon"}
     if unknown:
         raise Rejected("unsupported_job_action_type")
-    actions = [a for a in raw_actions if a.get("type") in ACTION_EVENT]
-    observed = [
+    kept_positions = [
+        i for i, a in enumerate(raw_actions) if a.get("type") in ACTION_EVENT
+    ]
+    actions = [raw_actions[i] for i in kept_positions]
+    raw_observed = [
         e
         for e in events
         if isinstance(e.get("details"), dict)
@@ -114,6 +117,27 @@ def paired_samples(
     ]
     if not states or not actions:
         raise Rejected("empty_states_or_actions")
+    state_indices = list(range(len(states)))
+    if len(states) == len(raw_actions) == len(raw_observed):
+        # pin 运行时也会报告 SkillDaemon，并可能导出其终局状态；不是训练动作。
+        expected = dict(ACTION_EVENT, SkillDaemon="SkillDaemon")
+        for action, event in zip(raw_actions, raw_observed, strict=True):
+            inner = event["details"].get("details")
+            if (
+                not isinstance(inner, dict)
+                or inner.get("action") != expected[action["type"]]
+            ):
+                raise Rejected("action_type_alignment_mismatch")
+        state_indices = kept_positions
+        states = [states[i] for i in state_indices]
+        observed = [raw_observed[i] for i in kept_positions]
+    else:
+        # 兼容仅给真实动作导出状态的协议；控制事件同样必须先过滤。
+        observed = [
+            e
+            for e in raw_observed
+            if (e["details"].get("details") or {}).get("action") != "SkillDaemon"
+        ]
     if not (len(actions) == len(states) == len(observed)):
         raise Rejected("state_action_event_count_mismatch")
     _time_order(states, "state")
@@ -162,6 +186,8 @@ def paired_samples(
                 "schema": VERSION,
                 "episode_id": meta["episode_id"],
                 "step": step,
+                "source_action_index": kept_positions[step],
+                "source_state_index": state_indices[step],
                 "stage_id": meta["stage_id"],
                 "stage_code": meta.get("stage_code"),
                 "source": meta.get("source"),
@@ -278,6 +304,9 @@ def convert(data_root: Path, out: Path) -> dict[str, Any]:
                         "images_included": False,
                         "win_verification": "collector_metadata_only",
                         "warnings": warnings,
+                        "paired_state_indices": [
+                            s["source_state_index"] for s in samples
+                        ],
                     }
                     _write_json(target / "episode.json", converted_meta)
                     for sample in samples:

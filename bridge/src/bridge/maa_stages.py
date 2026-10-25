@@ -76,9 +76,12 @@ _TILE_CATS = (
 
 
 def load_maa_tasks(maa_dir: str | Path) -> set[str]:
-    """合并 MAA 运行时下**所有** ``tasks.json`` 的 task 名。"""
+    """合并主任务与拆分的活动任务表；兼容旧版单个 tasks.json。"""
     names: set[str] = set()
-    for p in Path(maa_dir).rglob("tasks.json"):
+    runtime = Path(maa_dir)
+    paths = set(runtime.rglob("tasks.json"))
+    paths.update((runtime / "resource" / "tasks").rglob("*.json"))
+    for p in sorted(paths):
         try:
             j = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):

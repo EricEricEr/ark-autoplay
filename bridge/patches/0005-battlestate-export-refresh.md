@@ -98,7 +98,7 @@ void asst::BattleProcessTask::notify_battle_state()
 | 跨关卡复验（1-8 / 2-1，各 1 局） | **通过**——各 9 条快照，`kills` 末值 23 / 9、`costs` 全程非零；两关**无**结束快照（属触发条件差异，见下） |
 
 真机复验：4-1 **连跑 3 局**（同一 queue、同一账号）。episode 根目录：
-`E:\Users\35151\Desktop\zcode工作区\有可能相关的模型？\ark-data\episodes\main_04-01\`
+`<DATA_ROOT>/episodes/main_04-01/`
 （结论由 device-runner 提供；patch-docs 已独立逐行复核 3 局的 `battle_states.jsonl` 与 3 个探针文件计数，数值与结论一致。）
 
 `battle_states.jsonl` 逐行 `(t_ms\|costs\|kills)`，后缀 T/F = `in_battle`：

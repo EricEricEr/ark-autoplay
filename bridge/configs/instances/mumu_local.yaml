@@ -12,5 +12,5 @@ dpi: 320
 adb_path: E:/Program Files/Netease/MuMu/nx_main/adb.exe
 # 官方 MAA v6.18.0 发行版安装目录（只读使用：动态加载其 Python 接口，
 # 不复制、不修改目录内任何内容；驱动期间 MAA GUI 保持关闭）
-maa_dir: E:/Users/35151/Desktop/新建文件夹 (5)/MAA-v6.18.0-win-x64
+maa_dir: C:/ark/MAA
 maa_version: v6.18.0

@@ -562,6 +562,28 @@ def _mk_real_episode(root: Path, stage: str, name: str, tmp_path: Path) -> None:
     )
 
 
+def test_build_dataset_accepts_moved_bundles_with_local_job(tmp_path: Path) -> None:
+    """真实构建链可读采集端转换包，不依赖对方机器的绝对路径。"""
+    root, processed = tmp_path / "moved/episodes", tmp_path / "processed"
+    _write_min_processed(processed)
+    name = "job-portable-20261026"
+    _mk_real_episode(root, "main_99-01", name, tmp_path)
+    ep = root / "main_99-01" / name
+    old_job = tmp_path / f"job_{name}.json"
+    old_job.rename(ep / "job.json")
+    job_text = (ep / "job.json").read_text(encoding="utf-8")
+    (ep / "job.json").write_text(job_text, encoding="utf-8-sig")
+    state_text = (ep / "battle_states.jsonl").read_text(encoding="utf-8")
+    (ep / "battle_states.jsonl").write_text(state_text, encoding="utf-8-sig")
+    meta = json.loads((ep / "episode.json").read_text(encoding="utf-8"))
+    meta["job_file"] = "job.json"
+    (ep / "episode.json").write_text(json.dumps(meta), encoding="utf-8")
+    _v, stats, n = build_dataset(
+        processed, root, out_path=tmp_path / "portable.npz", holdout_stages=set(),
+    )
+    assert n == 1 and stats.n_kept == 1 and stats.drop_bad_files == 0
+
+
 def test_build_dataset_applies_exclusion(tmp_path: Path) -> None:
     """集成：排除集在 build 主循环生效且计数；``exclusion=None`` 时 v1 行为不回归。"""
     root = tmp_path / "episodes"

@@ -25,6 +25,8 @@
 
 训练入口为 `uv run python -m ark_core.training.run_v1 --help`，训练依赖用 `uv sync --group train` 安装。`ark_core.infer` 提供推理，bridge 的 `loop_runner` 提供实验性闭环；二者依赖本地训练产物，采集者无需运行。整体状态见 [docs/STATUS.md](../docs/STATUS.md)。
 
+状态训练构建器读取作业和状态文件，不读取 MP4/PNG。采集端可按 [采集＋转换指南](../bridge/docs/collect-and-convert.md) 产出轻量 bundle；全量/增量构建器均支持其中的相对 `job_file` 和内置 `job.json`，不依赖贡献者机器上的绝对路径。最终词表、关卡划分和静态特征仍由统一配置决定。
+
 ## 许可证｜License
 
 本项目**整体采用 AGPL-3.0**（见根目录与各子目录的 `LICENSE`，四处文本完全一致）。

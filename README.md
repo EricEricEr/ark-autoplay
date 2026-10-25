@@ -48,7 +48,9 @@ MuMu模拟器 ──截图──► bridge(数据工厂) ──版本化协议�
 
 ## 快速开始
 
-**协助采集数据从 [采集者指南](bridge/docs/collecting.md) 开始。** 只采集需要 Windows 10/11 x64、MuMu（1920×1080 / DPI 320）、Python 3.12 + uv，以及 [配套补丁 MAA 运行时](bridge/maacore/README.md)。无需安装训练用 torch 或下载模型权重。
+**协助者可按分工选择 [指南 A：仅采集](bridge/docs/collect-only.md) 或 [指南 B：采集并本地转换](bridge/docs/collect-and-convert.md)**，总览见 [采集者指南入口](bridge/docs/collecting.md)。当前结构化策略训练不要求 MP4，B 可直接整理出不含图片的状态—动作包。原始画面在采集者本地保留以便复核。
+
+只采集需要 Windows 10/11 x64、MuMu（1920×1080 / DPI 320）、Python 3.12 + uv，以及 [配套补丁 MAA 运行时](bridge/maacore/README.md)。本地转换也无需训练用 torch/GPU 或模型权重。
 
 ```powershell
 git clone https://github.com/EricEricEr/ark-autoplay.git

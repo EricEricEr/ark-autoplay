@@ -586,14 +586,35 @@ def encode_episode(
 
 def _read_json(path: Path) -> Any:
     """读 utf-8 JSON 文件。"""
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
+
+
+def resolve_episode_job(ep_dir: Path, meta: dict[str, Any]) -> Path:
+    """解析可搬家 bundle 的作业路径，兼容历史绝对路径。
+
+    采集端转换包内置 job.json；原始包可从同一数据根 tmp/maa_jobs 恢复。
+    优先随包副本，避免另一台机器上同名旧绝对路径被误用。
+    """
+    candidates = [ep_dir / "job.json"]
+    declared = Path(str(meta.get("job_file") or ""))
+    if meta.get("job_file") and not declared.is_absolute():
+        candidates.append(ep_dir / declared)
+    job_id = (meta.get("source") or {}).get("job_id")
+    if job_id is not None and re.fullmatch(r"[A-Za-z0-9_-]+", str(job_id)):
+        candidates.append(ep_dir.parents[2] / "tmp/maa_jobs" / f"job_{job_id}.json")
+    if meta.get("job_file") and declared.is_absolute():
+        candidates.append(declared)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(f"缺少随包作业 JSON: {ep_dir.name}")
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     """读 utf-8 JSONL 文件（空行跳过）。"""
     out: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -636,7 +657,7 @@ def build_dataset(
         """读一局的四个输入文件；任何一步失败返回 None（调用方计数）。"""
         try:
             meta = _read_json(ep_dir / "episode.json")
-            job = _read_json(Path(str(meta["job_file"])))
+            job = _read_json(resolve_episode_job(ep_dir, meta))
             states = _read_jsonl(ep_dir / "battle_states.jsonl")
             ev_path = ep_dir / "action_events.jsonl"
             events = _read_jsonl(ev_path) if ev_path.is_file() else []
@@ -807,7 +828,7 @@ def build_dataset_delta(
             stats.drop_no_stage += 1
             continue
         try:
-            job = _read_json(Path(str(meta["job_file"])))
+            job = _read_json(resolve_episode_job(ep_dir, meta))
             states = _read_jsonl(ep_dir / "battle_states.jsonl")
             ev_path = ep_dir / "action_events.jsonl"
             events = _read_jsonl(ev_path) if ev_path.is_file() else []

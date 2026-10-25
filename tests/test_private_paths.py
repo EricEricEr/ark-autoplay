@@ -28,6 +28,11 @@ class PrivatePathTests(unittest.TestCase):
         self.assertEqual(private_path_lines(("first\n" + path).encode()), [2])
         self.assertEqual(private_path_lines(b"\0" + path.encode()), [])
 
+    def test_posix_user_profiles_are_not_published(self) -> None:
+        for base in ("home", "Users"):
+            path = f"/{base}/SyntheticPerson/data"
+            self.assertEqual(private_path_lines(path.encode()), [1])
+
 
 if __name__ == "__main__":
     unittest.main()

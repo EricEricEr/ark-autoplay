@@ -1,4 +1,4 @@
-"""检查已跟踪文件中的真实 Windows 用户目录，不输出命中内容或用户名。
+"""检查已跟踪文件中的真实用户目录，不输出命中内容或用户名。
 
 默认检查 HEAD；--worktree 也检查未忽略的待提交文件；--history 检查所有本地
 引用可达的历史 blob。占位符可以公开，真实机器配置应放进 *.local.yaml。
@@ -13,6 +13,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 PROFILE = re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+([^\\/\s\"'`]+)", re.IGNORECASE)
+POSIX_PROFILE = re.compile(r"(?<![A-Za-z0-9:])/(?:Users|home)/([^/\\\s\"'`]+)")
 PLACEHOLDERS = frozenset({
     "xxx", "user", "username", "example", "yourname", "local-user",
     "%username%", "${username}", "$user",
@@ -25,11 +26,12 @@ def private_path_lines(content: bytes) -> list[int]:
         return []
     text = content.decode("utf-8", errors="replace")
     lines = set()
-    for match in PROFILE.finditer(text):
-        name = match.group(1)
-        if name.lower() in PLACEHOLDERS or (name.startswith("<") and name.endswith(">")):
-            continue
-        lines.add(text.count("\n", 0, match.start()) + 1)
+    for pattern in (PROFILE, POSIX_PROFILE):
+        for match in pattern.finditer(text):
+            name = match.group(1)
+            if name.lower() in PLACEHOLDERS or (name.startswith("<") and name.endswith(">")):
+                continue
+            lines.add(text.count("\n", 0, match.start()) + 1)
     return sorted(lines)
 
 
@@ -98,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ref", default="HEAD")
     args = parser.parse_args(argv)
     repo = Path(subprocess.check_output(
-        ["git", "rev-parse", "--show-toplevel"], text=True,
+        ["git", "rev-parse", "--show-toplevel"], text=True, encoding="utf-8",
     ).strip())
     if args.worktree:
         names = git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard")

@@ -1,4 +1,4 @@
-name: privacy-path-check
+name: privacy-check
 
 on: [push, pull_request]
 
@@ -11,8 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - name: Test the personal-path checker
-        run: python -m unittest discover -s tests -p test_private_paths.py
+      - name: Test the privacy gates
+        run: python -m unittest discover -s tests -p 'test_priv*.py'
       - name: Check the committed snapshot
-        run: python scripts/check_private_paths.py
+        run: python scripts/check_privacy.py
+      - name: Check all commits introduced by this update
+        env:
+          PRIVACY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PRIVACY_TIP: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python scripts/check_privacy.py --outgoing "$PRIVACY_BASE" --tip "$PRIVACY_TIP"

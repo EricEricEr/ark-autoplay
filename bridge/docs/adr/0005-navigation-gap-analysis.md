@@ -56,7 +56,7 @@ copilot_list = [{"filename": <作业绝对路径>, "nav_name_override": "0-2"}]
 - ✅ **零代理痕迹**：无 `UsePrts`/`PRTS1`/`PrtsErrorConfirm`（护栏确认干净）
 - ✅ 走的是 `Copilot@FullStageNavigation`（Copilot 自己的导航任务，非 Fight）
 - ❌ **卡死**：`FullStageNavigation` 反复重试，OCR 读到的全是主界面文本
-  （`2026/10/091721` 时间、`431` 理智、`437790` 龙门币、`868/199`、`ID434541074`）
+  （时间、理智、龙门币、资源计数、游戏账号 ID 等主页文字；账号标识已隐去）
 
 ## 根因：Copilot 的导航**只管地图内滑动，没有"从主页进入章节地图"**
 

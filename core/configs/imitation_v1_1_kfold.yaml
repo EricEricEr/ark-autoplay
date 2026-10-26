@@ -29,7 +29,7 @@ data:
   episodes_root: "${ARK_ML_ROOT}/../ark-data/episodes"
   dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v1_1.npz"  # 复用 v1.1 产物
   grid_channels: 8
-  vocab_top_k: 256
+  vocab_top_k: 0
   limit: null
 
   exclude_by_result: true
@@ -61,7 +61,7 @@ training:
   lr: 3.0e-4
   weight_decay: 0.01
   grad_clip: 1.0
-  eval_train_batches: 64
+  eval_train_batches: 0
   w_type: 1.0
   w_target: 1.0
   w_cell: 1.0

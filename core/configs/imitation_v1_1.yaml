@@ -28,7 +28,7 @@ data:
   episodes_root: "${ARK_ML_ROOT}/../ark-data/episodes"   # 真机 episodes（只读）
   dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v1_1.npz"   # v1.1 独立产物
   grid_channels: 8       # 5 = v1 地形口径；8 = 追加路线几何 3 通道
-  vocab_top_k: 256
+  vocab_top_k: 0
   limit: null            # 调试用：只取前 N 局（null = 全量）
 
   # 清洗口径与 v2/v3 相同，保证数据池一致（当前批次实测无有效局被剔，见 build_report）
@@ -56,7 +56,7 @@ training:
   lr: 3.0e-4
   weight_decay: 0.01
   grad_clip: 1.0
-  eval_train_batches: 64   # train 档评测抽样（holdout 恒全量）
+  eval_train_batches: 0   # train 档评测抽样（holdout 恒全量）
   ckpt_name: track_a_v1_1.pt   # 独立产物名，避免与 v1 的 track_a_v1.pt 混淆
   # 损失权重：cell/dir 只在 deploy 上计算（沿用 v0 imitate.compute_loss）
   w_type: 1.0

@@ -16,3 +16,5 @@ resource_policy:
   # 所有采集者默认禁止；不得继承维护者自抽号的源石授权。
   # 只有该账号所有者明确同意后才可在本地副本设为 true。
   allow_originite: false
+  # 理智药同样按账号授权，缺项默认为 false。
+  allow_medicine: false

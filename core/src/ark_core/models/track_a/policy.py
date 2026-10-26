@@ -42,6 +42,49 @@ N_GROUPS = 3
 """实体组数：0=cell 1=spawn 2=squad。"""
 
 
+def history_target_embedding(
+    indices: Tensor,
+    embedding: nn.Embedding,
+    squad_tokens: Tensor,
+    vocab_size: int,
+    *,
+    dynamic: bool,
+) -> Tensor:
+    """变长编队历史直接引用对应实体，不受固定槽位 embedding 长度限制。"""
+    if not dynamic:
+        return embedding(indices)
+    start = 1 + vocab_size
+    local = indices >= start
+    encoded = embedding(indices.masked_fill(local, 0))
+    count = squad_tokens.shape[1]
+    if not count:
+        if bool(local.any()):
+            raise ValueError("历史指向编队槽位，但输入编队为空")
+        return encoded
+    slots = (indices - start).clamp(min=0)
+    if bool((local & (slots >= count)).any()):
+        raise ValueError("历史目标槽位不在本局完整编队内")
+    selected = squad_tokens.gather(
+        1, slots.clamp(max=count - 1).unsqueeze(-1).expand(-1, -1, squad_tokens.shape[-1])
+    )
+    return torch.where(local.unsqueeze(-1), selected, encoded)
+
+
+def dynamic_target_logits(
+    decoder: Tensor,
+    global_logits: Tensor,
+    squad_tokens: Tensor,
+    squad_mask: Tensor,
+    query: nn.Linear,
+    key: nn.Linear,
+) -> Tensor:
+    """全局目标头加本局全部编队实体指针，输出槽位数随输入变化。"""
+    pointer = torch.einsum("btd,bqd->btq", query(decoder), key(squad_tokens))
+    pointer = pointer / (decoder.shape[-1] ** 0.5)
+    pointer = pointer.masked_fill(~squad_mask.unsqueeze(1), float("-inf"))
+    return torch.cat([global_logits, pointer], dim=-1)
+
+
 class EntityEncoder(nn.Module):
     """把三组实体拼成一个 token 序列做自注意力。
 
@@ -92,8 +135,7 @@ class EntityEncoder(nn.Module):
         """返回 (编码序列 [B,L,D], n_cells, n_spawns, n_squad)。"""
         if cells.shape[-1] != self.grid_channels:
             raise ValueError(
-                f"格子通道数不符：构造为 {self.grid_channels}，"
-                f"forward 收到 {cells.shape[-1]}"
+                f"格子通道数不符：构造为 {self.grid_channels}，forward 收到 {cells.shape[-1]}"
             )
         n_cells = cells.shape[1]
         n_spawns = spawns.shape[1]
@@ -161,6 +203,8 @@ class TrackAPolicy(nn.Module):
 
         self.head_type = nn.Linear(d_model, self.n_types)
         self.head_target = nn.Linear(d_model, self.n_targets)
+        self.squad_query = nn.Linear(d_model, d_model) if not max_squad else None
+        self.squad_key = nn.Linear(d_model, d_model) if not max_squad else None
         self.head_dir = nn.Linear(d_model, self.n_dirs)
         # 格子指针（加性注意力式）
         self.cell_query = nn.Linear(d_model, d_model)
@@ -182,14 +226,20 @@ class TrackAPolicy(nn.Module):
     ) -> dict[str, Tensor]:
         """前向。hist_* 已右移一位（首列为 BOS）。"""
         squad_tok = self.op_proj(squad_feat)
-        enc, n_cells, _n_spawns, _n_squad = self.encoder(
+        enc, n_cells, n_spawns, _n_squad = self.encoder(
             cells, cell_pos, cell_mask, spawns, spawn_mask, squad_tok, squad_mask
         )
         t = hist_type.shape[1]
 
         h = (
             self.hist_type(hist_type)
-            + self.hist_target(hist_target)
+            + history_target_embedding(
+                hist_target,
+                self.hist_target,
+                squad_tok,
+                self.vocab_size,
+                dynamic=not self.max_squad,
+            )
             + self.hist_dir(hist_dir)
             + self.hist_cell(hist_cell)
         )
@@ -205,6 +255,15 @@ class TrackAPolicy(nn.Module):
         cell_logits = cell_logits.masked_fill(~cell_mask.unsqueeze(1), float("-inf"))
         # 目标指针同理：编队 padding 槽位置 -inf
         target_logits = self.head_target(dec)
+        if self.squad_query is not None and self.squad_key is not None:
+            target_logits = dynamic_target_logits(
+                dec,
+                target_logits,
+                enc[:, n_cells + n_spawns :, :],
+                squad_mask,
+                self.squad_query,
+                self.squad_key,
+            )
         squad_start = 1 + self.vocab_size
         if self.max_squad:
             slot_valid = squad_mask[:, : self.max_squad]

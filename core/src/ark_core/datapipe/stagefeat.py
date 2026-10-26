@@ -66,10 +66,10 @@ GRID_CHANNELS = 5
 GRID_UNKNOWN = -1
 """未知编码值（未在词表登记的 h / build / mode）。"""
 
-DEFAULT_MAX_GRID = 64
+DEFAULT_MAX_GRID = 0
 """网格边长上限（实测最大 40×40；超出报错而非静默截断）。"""
 
-DEFAULT_MAX_ROUTE_POINTS = 256
+DEFAULT_MAX_ROUTE_POINTS = 0
 """单条路线路径点上限（实测最大 132；超出报错）。"""
 
 _STRUCT_FLAGS = ("start", "fly_start", "end")
@@ -128,9 +128,7 @@ class TileVocab:
                 str(k): [str(x) for x in (v or [])]
                 for k, v in (sec["structural_keys"] or {}).items()
             },
-            checkpoint_kind={
-                str(k): str(v) for k, v in (sec["checkpoint_kind"] or {}).items()
-            },
+            checkpoint_kind={str(k): str(v) for k, v in (sec["checkpoint_kind"] or {}).items()},
             raw=sec,
         )
 
@@ -244,7 +242,7 @@ def _encode_grid(
     cols = len(grid[0]) if rows else 0
     if any(len(r) != cols for r in grid):
         raise StagefeatError("grid 非矩形：本模块要求每行等长（实测数据全部满足）")
-    if rows > max_rows or cols > max_cols:
+    if (max_rows and rows > max_rows) or (max_cols and cols > max_cols):
         raise StagefeatError(
             f"网格 {rows}×{cols} 超出上限 {max_rows}×{max_cols}；"
             "请调大 configs/data.yaml 的 stagefeat.max_grid_rows/cols，不要静默截断"
@@ -297,7 +295,7 @@ def _encode_route(
             stats.unknown_checkpoint_types[str(raw_type)] += 1
 
     n_points = len(points) // 2
-    if n_points > max_points:
+    if max_points and n_points > max_points:
         raise StagefeatError(
             f"路线路径点 {n_points} 超出上限 {max_points}；"
             "请调大 configs/data.yaml 的 stagefeat.max_route_points，不要静默截断"
@@ -322,7 +320,7 @@ def build_stagefeat(
     out_dir: Path,
     *,
     vocab: TileVocab | None = None,
-    include_variants: bool = False,
+    include_variants: bool = True,
 ) -> StagefeatBuildResult:
     """构建关卡静态特征 parquet（一关一行）。
 

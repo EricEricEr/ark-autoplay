@@ -63,16 +63,13 @@ DIR_TO_IDX: dict[str, int] = {d: i for i, d in enumerate(DIRECTIONS)}
 
 UNK_TARGET = 0
 """目标指针的 UNK 槽（索引 0 保留）。"""
-MAX_CELLS = 400
-"""最大格数。实测 2459 关中 99.5% ≤400（最大 1600 = act2multi_tr02），超者多为
-`*multi` 多连战与 `camp` 剿灭这类特殊玩法，与主线形态差异大。"""
-
-MAX_SPAWNS = 400
-"""最大出怪数。实测中位 38、最大 1393；>400 的仅 30 关（集中在 camp/multi 族）。
-上限从 200 放宽到 400 可多保留约 2300 局（成本仅为注意力序列变长）。"""
-
-MAX_SQUAD = 16
-MAX_ACTIONS = 128
+MAX_CELLS = 0
+MAX_SPAWNS = 0
+MAX_SQUAD = 0
+MAX_ACTIONS = 0
+"""兼容旧导入名；0 表示不限。新模型使用变长编队指针。"""
+CELL_INDEX_SCALE = 400.0
+"""旧动作格子索引的线性缩放尺度，不截断数值，不是格数上限。"""
 
 
 @dataclass
@@ -165,6 +162,9 @@ def _action_target_token(a: dict[str, Any]) -> tuple[str | None, bool]:
     if kind == "category":
         cid = tgt.get("category_id")
         return (f"category:{cid}", False) if cid else (None, False)
+    raw_name = tgt.get("name_raw") or tgt.get("name")
+    if raw_name:
+        return f"name:{raw_name}", False
     return (None, False)
 
 
@@ -175,6 +175,15 @@ def _squad_char_ids(ep: dict[str, Any]) -> list[str]:
         cid = sl.get("char_id")
         if cid:
             out.append(str(cid))
+    if not out:
+        for group in ep.get("groups") or []:
+            options = (
+                group.get("opers") if group.get("opers") is not None else group.get("options", [])
+            )
+            for option in options:
+                cid = option.get("id") or option.get("char_id")
+                if cid and str(cid) not in out:
+                    out.append(str(cid))
     return out
 
 
@@ -196,7 +205,7 @@ def build_vocab(
     episodes_path: Path,
     keep_stage_ids: set[str],
     *,
-    top_k: int = 256,
+    top_k: int = 0,
     limit: int | None = None,
 ) -> Vocab:
     """**只从训练集**构建非干员目标词表（避免词表泄漏）。"""
@@ -211,7 +220,7 @@ def build_vocab(
             token, is_op = _action_target_token(a)
             if token and not is_op:
                 counter[token] += 1
-    return Vocab(extra_tokens=[t for t, _ in counter.most_common(top_k)])
+    return Vocab(extra_tokens=[t for t, _ in counter.most_common(top_k or None)])
 
 
 # ---------------------------------------------------------------- 单局编码
@@ -230,29 +239,11 @@ def encode_episode(
     cols = int(stage["cols"])
     n_cells = rows * cols
 
-    if n_cells > MAX_CELLS:
-        stats.drop_too_many_cells += 1
-        return None
-
     spawns_raw = stage.get("spawns") or []
-    if len(spawns_raw) > MAX_SPAWNS:
-        stats.drop_too_many_spawns += 1
-        return None
 
     squad_ids = _squad_char_ids(ep)
-    if not squad_ids:
-        stats.drop_no_squad += 1
-        return None
-    if len(squad_ids) > MAX_SQUAD:
-        squad_ids = squad_ids[:MAX_SQUAD]
 
     actions_in = ep.get("actions") or []
-    if not actions_in:
-        stats.drop_no_actions += 1
-        return None
-    if len(actions_in) > MAX_ACTIONS:
-        stats.drop_too_many_actions += 1
-        return None
 
     # ---- 格子张量：[n_cells, 5] + 归一化坐标 [n_cells, 2] ----
     grid_flat = np.asarray(stage["grid"], dtype=np.float32).reshape(n_cells, GRID_CHANNELS)
@@ -269,8 +260,12 @@ def encode_episode(
     if spawns_raw:
         sp = np.asarray(
             [
-                [float(s.get("t_ms") or 0) / 1000.0, float(s.get("wave") or 0),
-                 float(s.get("route") or 0), 1.0 if s.get("enemy_matched") else 0.0]
+                [
+                    float(s.get("t_ms") or 0) / 1000.0,
+                    float(s.get("wave") or 0),
+                    float(s.get("route") or 0),
+                    1.0 if s.get("enemy_matched") else 0.0,
+                ]
                 for s in spawns_raw
             ],
             dtype=np.float32,
@@ -283,9 +278,7 @@ def encode_episode(
         sp = np.zeros((0, 4), dtype=np.float32)
 
     # ---- 编队：featvec 行索引（未知干员 → -1，模型用零向量掩盖） ----
-    squad_idx = np.asarray(
-        [featvec_idx.get(cid, -1) for cid in squad_ids], dtype=np.int64
-    )
+    squad_idx = np.asarray([featvec_idx.get(cid, -1) for cid in squad_ids], dtype=np.int64)
 
     # ---- 动作序列 ----
     type_ids: list[int] = []
@@ -347,14 +340,16 @@ def encode_episode(
             d = "None"
         dir_ids.append(DIR_TO_IDX[d])
 
-    if not type_ids:
-        stats.drop_no_actions += 1
-        return None
-
     return {
         "stage_id": str((ep.get("stage") or {}).get("stage_id") or ""),
         "family": str((ep.get("stage") or {}).get("family") or ""),
         "episode_id": str(ep.get("episode_id") or ""),
+        "actions_raw": ep.get("actions_raw", ep.get("actions") or []),
+        "source_record_raw": ep.get("source_record_raw"),
+        "squad_raw": ep.get("squad") or [],
+        "groups_raw": ep.get("groups") or [],
+        "squad_representation": "actual_or_fixed" if ep.get("squad") else "candidate_pool",
+        "entity_only": not bool(type_ids),
         "cells": grid_flat,
         "cell_pos": pos,
         "rows": rows,
@@ -376,7 +371,7 @@ def build_dataset(
     *,
     out_path: Path,
     limit: int | None = None,
-    vocab_top_k: int = 256,
+    vocab_top_k: int = 0,
 ) -> tuple[Vocab, BuildStats, int]:
     """构建模仿学习数据集并落盘为 ``.npz``（一局一条，变长用 object 数组存）。
 
@@ -388,8 +383,7 @@ def build_dataset(
 
     # 训练集家族对应的关卡集合（词表只从这里建）
     train_stage_ids = {
-        sid for sid, r in stagefeat.items()
-        if _family_of_stage(sid) in train_families
+        sid for sid, r in stagefeat.items() if _family_of_stage(sid) in train_families
     }
     vocab = build_vocab(episodes_path, train_stage_ids, top_k=vocab_top_k, limit=limit)
 

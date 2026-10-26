@@ -79,6 +79,26 @@ def test_deploy_location_rejects_short_input():
         normalize_deploy_location([3])
 
 
+def test_default_stagefeat_preserves_large_grid_and_long_route(tmp_path, vocab):
+    """超过旧64边长、256路线点默认完整保存。"""
+    import pyarrow.parquet as pq
+
+    stage = _synth_stage("synthetic", rows=65, cols=2)
+    stage["routes"] = [
+        {
+            "mode": "WALK",
+            "start": [0, 0],
+            "end": [1, 1],
+            "checkpoints": [{"type": "MOVE", "pos": [1, 1]} for _ in range(300)],
+        }
+    ]
+    cfg, resolved = _write_sources(tmp_path, [stage])
+    result = build_stagefeat(cfg, resolved, vocab)
+    row = pq.read_table(result.out_path).to_pylist()[0]
+    assert row["rows"] == 65 and len(row["grid"]) == 65 * 2 * 5
+    assert row["routes"][0]["n_points"] == 300
+
+
 # ---------------- 2. 两套编码写法必须归一 ----------------
 
 
@@ -214,10 +234,10 @@ def test_build_stagefeat_end_to_end(tmp_path, vocab):
     cfg, resolved = _write_sources(tmp_path, [stage, variant])
 
     res = build_stagefeat(cfg, resolved, tmp_path, vocab=vocab)
-    assert res.n_stages == 1, "变体应被跳过"
-    assert res.stats.n_skipped_variant == 1
-    assert res.stats.n_null_routes == 1, "null 占位路线应被计数"
-    assert res.stats.n_routes == 1
+    assert res.n_stages == 2, "默认保留全部变体"
+    assert res.stats.n_skipped_variant == 0
+    assert res.stats.n_null_routes == 2, "null 占位路线应被计数"
+    assert res.stats.n_routes == 2
 
     import pyarrow.parquet as pq
 

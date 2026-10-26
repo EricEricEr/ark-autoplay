@@ -8,17 +8,18 @@
   },
   "run": {
     "heartbeat_s": 1.5,
-    "chain_timeout_s": 600,
-    "shell_timeout_s": 180,
-    "settle_timeout_s": 300,
+    "chain_timeout_s": 0,
+    "shell_timeout_s": 0,
+    "settle_timeout_s": 0,
     "pre_retry_attempts": 2,
     "pre_retry_idle_wait_s": 20,
-    "no_state_timeout_ticks": 40,
-    "gate_change_ticks": 2,
-    "freeze_ticks": 6,
-    "max_model_actions": 64,
+    "no_state_timeout_ticks": 0,
+    "gate_change_ticks": 0,
+    "freeze_ticks": 0,
+    "max_model_actions": 0,
     "support_unit_usage": 0,
-    "channel_mode": "append_per_action"
+    "channel_mode": "append_per_action",
+    "termination_mode": "observed_battle_result"
   },
   "infer_overrides": {
     "allow_vocab_targets": false,
@@ -32,7 +33,11 @@
       "ref_episode_dir": "ark-data/episodes/main_00-01/job-38233-20261019-085525",
       "total_proxy": 1,
       "opers": [
-        { "name": "芬", "skill": 1, "skill_usage": 0 }
+        {
+          "name": "芬",
+          "skill": 1,
+          "skill_usage": 0
+        }
       ],
       "note": "全员最笨：训练集 0-1 仅 1 集共 1 个动作。动作数并列最少的 29869 的 opers 为空壳（actions 内 name=\"11\" 占位，编队不可用），故取次选 38233（芬×1、Deploy@[3,2]）。"
     },
@@ -43,7 +48,11 @@
       "ref_episode_dir": "ark-data/episodes/main_00-02/job-83286-20261011-160439",
       "total_proxy": 1,
       "opers": [
-        { "name": "阿米娅", "skill": 1, "skill_usage": 0 }
+        {
+          "name": "阿米娅",
+          "skill": 1,
+          "skill_usage": 0
+        }
       ],
       "note": "0-2 最笨单关：阿米娅×1、1 动作（Deploy@[3,3]）；历史 win 无 blocker。"
     },
@@ -54,9 +63,21 @@
       "ref_episode_dir": "ark-data/episodes/main_00-03/job-93832-20261011-161427",
       "total_proxy": 4,
       "opers": [
-        { "name": "巡林者", "skill": 1, "skill_usage": 0 },
-        { "name": "黑角", "skill": 1, "skill_usage": 0 },
-        { "name": "安德切尔", "skill": 1, "skill_usage": 0 }
+        {
+          "name": "巡林者",
+          "skill": 1,
+          "skill_usage": 0
+        },
+        {
+          "name": "黑角",
+          "skill": 1,
+          "skill_usage": 0
+        },
+        {
+          "name": "安德切尔",
+          "skill": 1,
+          "skill_usage": 0
+        }
       ],
       "note": "0-3 最笨单关：3 名低星、4 动作（倍速+3 Deploy）；历史 win 无 blocker。"
     }

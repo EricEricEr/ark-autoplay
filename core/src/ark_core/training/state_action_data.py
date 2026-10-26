@@ -83,6 +83,7 @@ v1.1 格子通道（可选）
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from collections import Counter
@@ -100,10 +101,6 @@ from ..protocol.action import DIR_ALIASES as _DIR_ALIASES
 from ..protocol.action import GRID_CHANNELS, GRID_CHANNELS_V1_1
 from .imitation_data import (
     DIR_TO_IDX,
-    MAX_ACTIONS,
-    MAX_CELLS,
-    MAX_SPAWNS,
-    MAX_SQUAD,
     TYPE_TO_IDX,
     UNK_TARGET,
     Vocab,
@@ -263,9 +260,13 @@ class BuildStatsV1:
     n_episode_len_mismatch: int = 0
     """过滤后动作数与 battle_states 条数不一致、发生截断的局数。"""
     n_actions_dropped_tail: int = 0
-    """因截断丢弃的作业动作总数（战斗提前结束、只执行了前缀）。"""
+    """历史兼容字段；原始动作不再丢弃，新构建保持 0。"""
     n_extra_states_dropped: int = 0
-    """因截断丢弃的多余 battle_state 条数（结算后的尾部状态）。"""
+    """历史兼容字段；原始状态不再丢弃，新构建保持 0。"""
+    n_unpaired_actions: int = 0
+    n_unpaired_states: int = 0
+    n_entity_only: int = 0
+    n_empty_squad: int = 0
     n_skill_daemon: int = 0
     n_unknown_job_type: int = 0
     n_align_check_mismatch: int = 0
@@ -395,7 +396,8 @@ def _check_alignment(
         e
         for e in events
         if (e.get("details") or {}).get("what") == "CopilotAction"
-        and ((e.get("details") or {}).get("details") or {}).get("action") != "SkillDaemon"
+        and ((e.get("details") or {}).get("details") or {}).get("action")
+        in set(_COPILOT_ACTION_OF.values())
     ]
     for i, a in enumerate(actions[: len(ca)]):
         got = str(((ca[i].get("details") or {}).get("details") or {}).get("action"))
@@ -428,15 +430,29 @@ def encode_episode(
             f"grid_channels 只支持 {GRID_CHANNELS}/{GRID_CHANNELS_V1_1}，收到 {grid_channels}"
         )
     rows = int(sf["rows"])
+    raw_job = copy.deepcopy(job)
+    raw_states = copy.deepcopy(battle_states)
+    observed_names = {
+        str(op.get("name"))
+        for state in raw_states
+        for op in (state.get("hand") or []) + (state.get("deployed") or [])
+        if op.get("name") and name2cid.get(str(op.get("name")))
+    }
+    assignments = {}
+    for group in job.get("groups") or []:
+        options = group.get("opers") if group.get("opers") is not None else group.get("options", [])
+        candidates = {str(op.get("name")) for op in options if op.get("name")}
+        matched = candidates & observed_names
+        if len(matched) == 1:
+            assignments[str(group.get("name"))] = next(iter(matched))
+    if assignments:
+        job = copy.deepcopy(job)
+        for action in job.get("actions") or []:
+            if action.get("name") in assignments:
+                action["name"] = assignments[action["name"]]
     cols = int(sf["cols"])
     n_cells = rows * cols
-    if n_cells > MAX_CELLS:
-        stats.drop_too_many_cells += 1
-        return None
     spawns_raw = sf.get("spawns") or []
-    if len(spawns_raw) > MAX_SPAWNS:
-        stats.drop_too_many_spawns += 1
-        return None
 
     # ---- 作业动作：过滤 SkillDaemon → 与 battle_states 逐位对齐 → min 截断 ----
     actions_all: list[dict[str, Any]] = []
@@ -452,28 +468,39 @@ def encode_episode(
     if action_events is not None:
         _check_alignment(actions_all, action_events, stats)
 
+    policy_positions = [
+        index
+        for index, action in enumerate(job.get("actions") or [])
+        if str(action.get("type")) in JOB_TYPE_TO_ACTION
+    ]
+    if len(battle_states) == len(job.get("actions") or []):
+        battle_states = [battle_states[index] for index in policy_positions]
     total = min(len(actions_all), len(battle_states))
     if len(actions_all) != len(battle_states):
         stats.n_episode_len_mismatch += 1
-        stats.n_actions_dropped_tail += max(0, len(actions_all) - total)
-        stats.n_extra_states_dropped += max(0, len(battle_states) - total)
+        stats.n_unpaired_actions += max(0, len(actions_all) - total)
+        stats.n_unpaired_states += max(0, len(battle_states) - total)
     if total == 0:
-        stats.drop_no_actions += 1
-        return None
-    if total > MAX_ACTIONS:
-        stats.drop_too_many_actions += 1
-        return None
+        stats.n_entity_only += 1
     actions = actions_all[:total]
     states = battle_states[:total]
 
     # ---- 编队 = 作业 opers（中文名 → char_id；查不到保留槽位、featvec 置 -1）----
     squad_tokens: list[str] = []
     squad_idx_list: list[int] = []
-    for op in job.get("opers") or []:
+    opers = list(job.get("opers") or [])
+    seen_names = {str(op.get("name")) for op in opers}
+    for state in raw_states:
+        for op in (state.get("hand") or []) + (state.get("deployed") or []):
+            name = str(op.get("name") or "")
+            if name and name not in seen_names and name2cid.get(name):
+                seen_names.add(name)
+                opers.append({"name": name, "id": name2cid[name]})
+    for op in opers:
         name = str(op.get("name") or "")
         if not name:
             continue
-        cid = name2cid.get(name)
+        cid = name2cid.get(name) or op.get("id") or op.get("char_id")
         if cid is None:
             stats.n_squad_name_unk += 1
             squad_tokens.append(f"name:{name}")
@@ -482,10 +509,7 @@ def encode_episode(
             squad_tokens.append(cid)
             squad_idx_list.append(featvec_idx.get(cid, -1))
     if not squad_tokens:
-        stats.drop_no_squad += 1
-        return None
-    squad_tokens = squad_tokens[:MAX_SQUAD]
-    squad_idx_list = squad_idx_list[:MAX_SQUAD]
+        stats.n_empty_squad += 1
     squad_pos = {tok: i for i, tok in enumerate(squad_tokens)}
 
     # ---- 格子 / 出怪张量（与 v0 同口径；v1.1 追加路线几何通道）----
@@ -583,6 +607,14 @@ def encode_episode(
         "stage_id": str(stage_id),
         "family": family_of(base_stage_id(str(stage_id))),
         "episode_id": str(episode_id),
+        "job_raw": raw_job,
+        "battle_states_raw": raw_states,
+        "action_events_raw": action_events,
+        "resolved_group_assignment": assignments,
+        "entity_only": total == 0,
+        "policy_action_indices": policy_positions[:total],
+        "unpaired_actions": copy.deepcopy(actions_all[total:]),
+        "unpaired_states": copy.deepcopy(battle_states[total:]),
         "cells": grid_flat,
         "cell_pos": pos,
         "rows": rows,
@@ -594,7 +626,9 @@ def encode_episode(
         "target": np.asarray(target_ids, dtype=np.int64),
         "cell": np.asarray(cell_ids, dtype=np.int64),
         "dir": np.asarray(dir_ids, dtype=np.int64),
-        "state_feat": np.stack(state_rows).astype(np.float32),
+        "state_feat": np.stack(state_rows).astype(np.float32)
+        if state_rows
+        else np.zeros((0, STATE_DIM), dtype=np.float32),
     }
 
 
@@ -664,7 +698,7 @@ def build_dataset(
     out_path: Path,
     holdout_stages: set[str],
     limit: int | None = None,
-    vocab_top_k: int = 256,
+    vocab_top_k: int = 0,
     exclusion: ExclusionInfo | None = None,
     grid_channels: int = GRID_CHANNELS,
 ) -> tuple[Vocab, BuildStatsV1, int]:
@@ -725,7 +759,7 @@ def build_dataset(
             name = a.get("name")
             if name and name2cid.get(str(name)) is None:
                 counter[f"name:{name}"] += 1
-    vocab = Vocab(extra_tokens=[t for t, _ in counter.most_common(vocab_top_k)])
+    vocab = Vocab(extra_tokens=[t for t, _ in counter.most_common(vocab_top_k or None)])
 
     stats = BuildStatsV1()
     records: list[dict[str, Any]] = []
@@ -759,6 +793,7 @@ def build_dataset(
         )
         if rec is None:
             continue
+        rec["episode_metadata_raw"] = copy.deepcopy(meta)
         records.append(rec)
         stats.n_kept += 1
 
@@ -784,7 +819,7 @@ def build_dataset_delta(
     out_path: Path,
     holdout_stages: set[str],
     limit: int | None = None,
-    vocab_top_k: int = 256,
+    vocab_top_k: int = 0,
     exclusion: ExclusionInfo | None = None,
     grid_channels: int = GRID_CHANNELS,
 ) -> tuple[Vocab, BuildStatsV1, dict[str, Any]]:

@@ -42,15 +42,21 @@ grid/spawns/编队全是动作发生前已知的静态信息，掩码重构不�
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 import numpy as np
 import torch
 from torch import nn
 
-from ..models.track_a.policy import SPAWN_IN, TrackAPolicy
+from ..models.track_a.policy import (
+    SPAWN_IN,
+    TrackAPolicy,
+    dynamic_target_logits,
+    history_target_embedding,
+)
 from ..protocol.action import ACTION_TYPES, DIRECTIONS, GRID_CHANNELS
 from .imitate import (
     TrainConfig,
@@ -82,9 +88,9 @@ class PretextConfig:
     epochs: int = 12
     grad_clip: float = 1.0
     seed: int = 42
-    limit_train: int = 16000
-    """训练侧截断（4060 8G 单轮 1~2h 封顶的成本阀；holdout 恒全量评测）。"""
-    holdout_eval_batches: int = 64
+    limit_train: int = 0
+    """0 表示全量训练；正数只供显式指定的实验。"""
+    holdout_eval_batches: int = 0
     mask_rate: float = 0.15
     ratio_mask: float = 0.8
     """被抽中实体换成可学习 mask token 的比例（其余 = 随机 / 保留各半残）。"""
@@ -97,6 +103,40 @@ class PretextConfig:
     w_act_target: float = 1.0
     w_act_cell: float = 1.0
     w_act_dir: float = 0.5
+
+
+class SSLBatchSequence(Sequence[dict[str, Any]]):
+    """全量记录按需组批；只重排记录块，不把每批膨胀后的特征常驻内存。"""
+
+    def __init__(self, records: list[dict[str, Any]], featvec: np.ndarray, batch_size: int) -> None:
+        self.chunks = [records[i : i + batch_size] for i in range(0, len(records), batch_size)]
+        self.featvec = featvec
+
+    def __len__(self) -> int:
+        return len(self.chunks)
+
+    @overload
+    def __getitem__(self, index: int) -> dict[str, Any]: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[dict[str, Any]]: ...
+
+    def __getitem__(self, index: int | slice) -> dict[str, Any] | list[dict[str, Any]]:
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        chunk = self.chunks[index]
+        batch = collate(chunk, self.featvec)
+        nq = max(len(record["squad_idx"]) for record in chunk)
+        gold = np.full((len(chunk), nq), -1, dtype=np.int64)
+        for row, record in enumerate(chunk):
+            indices = np.asarray(record["squad_idx"])
+            gold[row, : len(indices)] = indices
+        batch["squad_gold_idx"] = torch.from_numpy(gold)
+        return batch
+
+    def shuffle(self, rng: np.random.Generator) -> None:
+        """每轮重排所有记录块，保留不足整批的尾部。"""
+        rng.shuffle(self.chunks)
 
 
 # ---------------------------------------------------------------- 掩码采样
@@ -216,9 +256,9 @@ def mask_batch(
         type_m[b_.to(dev), j_.to(dev)] = torch.randint(
             len(ACTION_TYPES), (len(b_),), generator=gen
         ).to(dev)
-        target_m[b_.to(dev), j_.to(dev)] = torch.randint(
-            n_targets, (len(b_),), generator=gen
-        ).to(dev)
+        target_m[b_.to(dev), j_.to(dev)] = torch.randint(n_targets, (len(b_),), generator=gen).to(
+            dev
+        )
         dir_m[b_.to(dev), j_.to(dev)] = torch.randint(
             len(DIRECTIONS), (len(b_),), generator=gen
         ).to(dev)
@@ -287,8 +327,8 @@ class SSLMaskedPolicy(TrackAPolicy):
         动作历史沿用右移 BOS（``hist_*`` 已由 ``shift_history`` 处理）。
         """
         enc_mod = self.encoder
-        cell_tok = enc_mod.cell_proj(torch.cat([cells, cell_pos], dim=-1)) + (
-            enc_mod.type_emb.weight[0]
+        cell_tok = (
+            enc_mod.cell_proj(torch.cat([cells, cell_pos], dim=-1)) + (enc_mod.type_emb.weight[0])
         )
         spawn_tok = enc_mod.spawn_proj(spawns) + enc_mod.type_emb.weight[1]
         squad_tok = self.op_proj(squad_feat) + enc_mod.type_emb.weight[2]
@@ -305,12 +345,18 @@ class SSLMaskedPolicy(TrackAPolicy):
         h = (
             torch.where(m80_hist_in.unsqueeze(-1), self.mask_hist_type, self.hist_type(hist_type))
             + torch.where(
-                m80_hist_in.unsqueeze(-1), self.mask_hist_target, self.hist_target(hist_target)
+                m80_hist_in.unsqueeze(-1),
+                self.mask_hist_target,
+                history_target_embedding(
+                    hist_target,
+                    self.hist_target,
+                    squad_tok,
+                    self.vocab_size,
+                    dynamic=not self.max_squad,
+                ),
             )
             + torch.where(m80_hist_in.unsqueeze(-1), self.mask_hist_dir, self.hist_dir(hist_dir))
-            + torch.where(
-                m80_hist_in.unsqueeze(-1), self.mask_hist_cell, self.hist_cell(hist_cell)
-            )
+            + torch.where(m80_hist_in.unsqueeze(-1), self.mask_hist_cell, self.hist_cell(hist_cell))
         )
         h = self.hist_norm(h)
         t = hist_type.shape[1]
@@ -324,6 +370,15 @@ class SSLMaskedPolicy(TrackAPolicy):
         # 与 policy.forward 同口径：padding 格/编队 padding 槽置 -inf，评测指标可对比
         cell_logits = cell_logits.masked_fill(~cell_mask.unsqueeze(1), float("-inf"))
         target_logits = self.head_target(dec)
+        if self.squad_query is not None and self.squad_key is not None:
+            target_logits = dynamic_target_logits(
+                dec,
+                target_logits,
+                enc[:, n_cells + n_spawns :, :],
+                squad_mask,
+                self.squad_query,
+                self.squad_key,
+            )
         squad_start = 1 + self.vocab_size
         if self.max_squad:
             slot_valid = squad_mask[:, : self.max_squad]
@@ -394,6 +449,7 @@ def compute_ssl_loss(
         + cfg.w_act_target * l_target
         + cfg.w_act_cell * l_cellptr
         + cfg.w_act_dir * l_dir
+        + out["cell_recon"].sum() * 0.0
     )
     parts = {
         "recon_cell": float(l_cell.detach()),
@@ -412,9 +468,7 @@ def _mk_to_device(mk: dict[str, Any], device: torch.device) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in mk.items():
         if k == "inputs":
-            out[k] = {
-                ik: (iv.to(device) if torch.is_tensor(iv) else iv) for ik, iv in v.items()
-            }
+            out[k] = {ik: (iv.to(device) if torch.is_tensor(iv) else iv) for ik, iv in v.items()}
         elif torch.is_tensor(v):
             out[k] = v.to(device)
         else:
@@ -428,7 +482,7 @@ def _mk_to_device(mk: dict[str, Any], device: torch.device) -> dict[str, Any]:
 @torch.no_grad()
 def evaluate_ssl(
     model: SSLMaskedPolicy,
-    tensors: list[dict[str, Any]],
+    tensors: Sequence[dict[str, Any]],
     eval_masks: list[dict[str, Any]],
     featvec: torch.Tensor,
     n_targets: int,
@@ -467,8 +521,12 @@ def evaluate_ssl(
         _acc("dir", out["dir"], batch["dir"], sel_dir)
 
         for name, pred, gold, sel in (
-            ("mae_cell", out["cell_recon"], torch.cat([batch["cells"], batch["cell_pos"]], -1),
-             mk["sel_cell"]),
+            (
+                "mae_cell",
+                out["cell_recon"],
+                torch.cat([batch["cells"], batch["cell_pos"]], -1),
+                mk["sel_cell"],
+            ),
             ("mae_spawn", out["spawn_recon"], batch["spawns"], mk["sel_spawn"]),
         ):
             n = int(sel.sum())
@@ -502,18 +560,28 @@ def _forward_masked(
     bos = torch.zeros((m80_hist.shape[0], 1), dtype=torch.bool, device=m80_hist.device)
     m80_hist_in = torch.cat([bos, m80_hist[:, :-1]], dim=1)
     return model.forward_ssl(
-        inp["cells"], inp["cell_pos"], batch["cell_mask"],
-        inp["spawns"], batch["spawn_mask"],
-        inp["squad_feat"], batch["squad_mask"],
-        h_type, h_target, h_cell, h_dir,
-        mk["m80_cell"], mk["m80_spawn"], mk["m80_squad"], m80_hist_in,
+        inp["cells"],
+        inp["cell_pos"],
+        batch["cell_mask"],
+        inp["spawns"],
+        batch["spawn_mask"],
+        inp["squad_feat"],
+        batch["squad_mask"],
+        h_type,
+        h_target,
+        h_cell,
+        h_dir,
+        mk["m80_cell"],
+        mk["m80_spawn"],
+        mk["m80_squad"],
+        m80_hist_in,
     )
 
 
 # ---------------------------------------------------------------- 基线
 
 
-def _train_side_stats(train_tensors: list[dict[str, Any]]) -> dict[str, Any]:
+def _train_side_stats(train_tensors: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """train 侧众数/均值统计（恒预测基线的拟合侧，只看不与评测同分布的 train）。"""
     type_hist = torch.zeros(len(ACTION_TYPES), dtype=torch.long)
     dir_hist = torch.zeros(len(DIRECTIONS), dtype=torch.long)
@@ -556,20 +624,16 @@ def _train_side_stats(train_tensors: list[dict[str, Any]]) -> dict[str, Any]:
         "dir_majority": int(dir_hist.argmax()),
         "squad_majority": int(squad_hist.argmax()) if squad_hist is not None else 0,
         "cell_mean": (
-            cell_sum / max(1, cell_n)
-            if cell_sum is not None
-            else torch.zeros(CELL_TOKEN_DIM)
+            cell_sum / max(1, cell_n) if cell_sum is not None else torch.zeros(CELL_TOKEN_DIM)
         ),
         "spawn_mean": (
-            spawn_sum / max(1, spawn_n)
-            if spawn_sum is not None
-            else torch.zeros(SPAWN_IN)
+            spawn_sum / max(1, spawn_n) if spawn_sum is not None else torch.zeros(SPAWN_IN)
         ),
     }
 
 
 def constant_baseline_eval(
-    tensors: list[dict[str, Any]],
+    tensors: Sequence[dict[str, Any]],
     eval_masks: list[dict[str, Any]],
     stats: dict[str, Any],
 ) -> dict[str, Any]:
@@ -627,6 +691,21 @@ def pretrain(
     """掩码实体建模预训练主循环（轨道 A）。"""
     set_seed(cfg.seed)
     records, featvec_np, vocab_tokens = load_records(npz_path)
+    # 原始字段完整留在NPZ中；训练视图只引用计算字段，避免重复持有溯源对象。
+    fields = (
+        "cells",
+        "cell_pos",
+        "spawns",
+        "squad_idx",
+        "type",
+        "target",
+        "cell",
+        "dir",
+        "family",
+        "stage_id",
+        "episode_id",
+    )
+    records = [{key: record[key] for key in fields if key in record} for record in records]
     featvec = torch.from_numpy(np.asarray(featvec_np, dtype=np.float32))
 
     train_recs = [r for r in records if (r["family"] or "") not in holdout_families]
@@ -635,30 +714,20 @@ def pretrain(
         raise ValueError("train/holdout 任一侧为空：请检查 holdout_families 设置")
     rng = np.random.default_rng(cfg.seed)
     rng.shuffle(train_recs)
-    train_recs = train_recs[: cfg.limit_train]
+    if cfg.limit_train:
+        train_recs = train_recs[: cfg.limit_train]
     log(
         f"[data] 总 {len(records)} 局 → train {len(train_recs)}（截断上限 "
         f"{cfg.limit_train}）/ holdout {len(hold_recs)}（家族 {sorted(holdout_families)}）"
     )
 
-    def prep(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """collate + 附 ``squad_gold_idx``（v0 collate 不落 featvec 行号，重构真值要用）。"""
-        out: list[dict[str, Any]] = []
-        for i in range(0, len(recs), cfg.batch_size):
-            chunk = recs[i : i + cfg.batch_size]
-            c = collate(chunk, featvec_np)
-            b = len(chunk)
-            nq = max(len(r["squad_idx"]) for r in chunk)
-            g = np.full((b, nq), -1, dtype=np.int64)
-            for j, r in enumerate(chunk):
-                idx = np.asarray(r["squad_idx"])
-                g[j, : len(idx)] = idx
-            c["squad_gold_idx"] = torch.from_numpy(g)
-            out.append(c)
-        return out
-
-    train_tensors = prep(train_recs)
-    hold_tensors = prep(hold_recs)[: cfg.holdout_eval_batches]
+    train_tensors = SSLBatchSequence(train_recs, featvec_np, cfg.batch_size)
+    hold_tensors: Sequence[dict[str, Any]] = SSLBatchSequence(hold_recs, featvec_np, cfg.batch_size)
+    n_train, n_holdout = len(train_recs), len(hold_recs)
+    # 原始字段仍在NPZ中；collate完成后释放重复的Python对象，计算张量覆盖全量记录。
+    del records, train_recs, hold_recs
+    if cfg.holdout_eval_batches:
+        hold_tensors = hold_tensors[: cfg.holdout_eval_batches]
     log(f"[data] train batches {len(train_tensors)} / holdout 评测 batches {len(hold_tensors)}")
 
     device = torch.device(device_str if torch.cuda.is_available() else "cpu")
@@ -677,18 +746,29 @@ def pretrain(
         dropout=cfg.dropout,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    log(f"[model] 参数量 {n_params/1e6:.2f}M  vocab={vocab.size}  device={device}")
+    log(f"[model] 参数量 {n_params / 1e6:.2f}M  vocab={vocab.size}  device={device}")
 
     n_targets = 1 + vocab.size + MAX_SQUAD
     gen = torch.Generator().manual_seed(cfg.seed)
     eval_gen = torch.Generator().manual_seed(cfg.seed + 1)
-    eval_masks = [mask_batch(b, featvec, n_targets, cfg, eval_gen) for b in hold_tensors]
+    eval_masks = [
+        mask_batch(
+            b,
+            featvec,
+            n_targets + (b["squad_mask"].shape[1] if not MAX_SQUAD else 0),
+            cfg,
+            eval_gen,
+        )
+        for b in hold_tensors
+    ]
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     total_steps = max(1, len(train_tensors) * cfg.epochs)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg.lr, total_steps=total_steps)
 
-    major = _train_side_stats(train_tensors[: cfg.holdout_eval_batches])
+    major = _train_side_stats(
+        train_tensors[: cfg.holdout_eval_batches] if cfg.holdout_eval_batches else train_tensors
+    )
     const_base = constant_baseline_eval(hold_tensors, eval_masks, major)
     log(
         f"[baseline] 恒预测（train 众数/均值 → holdout 评测位）: "
@@ -710,12 +790,11 @@ def pretrain(
         """把 best-so-far 权重落盘（每次刷新即覆写：宿主/断线事故 = 损失止于当前 epoch）。"""
         torch.save(
             {
-                "state_dict": (
-                    best_state if best_state is not None else model.state_dict()
-                ),
+                "state_dict": (best_state if best_state is not None else model.state_dict()),
                 "config": dict(cfg.__dict__),
                 "vocab": vocab_tokens,
                 "featvec_dim": int(featvec.shape[1]),
+                "max_squad": model.max_squad,
                 "n_featvec_rows": int(featvec.shape[0]),
                 "n_params": n_params,
                 "holdout_families": sorted(holdout_families),
@@ -727,11 +806,17 @@ def pretrain(
     t0 = time.time()
     for ep in range(cfg.epochs):
         model.train()
-        rng.shuffle(train_tensors)
+        train_tensors.shuffle(rng)
         ep_loss, nb = 0.0, 0
         for batch_cpu in train_tensors:
             batch = to_device(batch_cpu, device)
-            mk = mask_batch(batch_cpu, featvec, n_targets, cfg, gen)
+            mk = mask_batch(
+                batch_cpu,
+                featvec,
+                n_targets + (batch_cpu["squad_mask"].shape[1] if not MAX_SQUAD else 0),
+                cfg,
+                gen,
+            )
             mk = _mk_to_device(mk, device)
             out = _forward_masked(model, batch, mk)
             loss, _parts = compute_ssl_loss(out, batch, mk, cfg)
@@ -743,10 +828,16 @@ def pretrain(
             ep_loss += float(loss.detach())
             nb += 1
         hs = evaluate_ssl(model, hold_tensors, eval_masks, featvec, n_targets, cfg, device)
-        history.append({"epoch": ep + 1, "train_loss": ep_loss / max(1, nb), "holdout": hs,
-                        "elapsed_s": round(time.time() - t0, 1)})
+        history.append(
+            {
+                "epoch": ep + 1,
+                "train_loss": ep_loss / max(1, nb),
+                "holdout": hs,
+                "elapsed_s": round(time.time() - t0, 1),
+            }
+        )
         log(
-            f"[ep {ep+1}/{cfg.epochs}] train_loss={ep_loss/max(1, nb):.4f} | "
+            f"[ep {ep + 1}/{cfg.epochs}] train_loss={ep_loss / max(1, nb):.4f} | "
             f"holdout loss={hs['loss']:.4f} squad={hs.get('cls_squad_acc', 0):.3f} "
             f"type={hs.get('type_acc', 0):.3f} cell={hs.get('cell_acc', 0):.3f} "
             f"dir={hs.get('dir_acc', 0):.3f} | {history[-1]['elapsed_s']}s"
@@ -761,8 +852,8 @@ def pretrain(
     _save_ckpt()
     return {
         "n_params": n_params,
-        "n_train": len(train_recs),
-        "n_holdout": len(hold_recs),
+        "n_train": n_train,
+        "n_holdout": n_holdout,
         "best_epoch": best_epoch,
         "baseline_random_init": base,
         "baseline_constant": const_base,
@@ -812,9 +903,7 @@ def finetune_smoke(
 
     blob = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     sd = blob["state_dict"]
-    _records, featvec_np, vocab_tokens, state_dim, grid_channels = load_records_v1(
-        downstream_npz
-    )
+    _records, featvec_np, vocab_tokens, state_dim, grid_channels = load_records_v1(downstream_npz)
 
     from ..models.track_a.policy_v1 import TrackAPolicyV1
 
@@ -835,8 +924,15 @@ def finetune_smoke(
     log(f"[smoke] 预训练权重键级注入：加载 {loaded} 键，跳过 {len(skipped)} 键: {skipped}")
     init_path = out_dir / "init_extended.pt"
     out_dir.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": model.state_dict(), "source": str(ckpt_path),
-                "loaded_keys": loaded, "skipped_keys": skipped}, init_path)
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "source": str(ckpt_path),
+            "loaded_keys": loaded,
+            "skipped_keys": skipped,
+        },
+        init_path,
+    )
     log(f"[smoke] 初始化快照 → {init_path}")
 
     rep = train_downstream(

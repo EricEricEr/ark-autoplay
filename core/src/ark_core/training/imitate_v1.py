@@ -104,7 +104,7 @@ def collate_v1(
     n_cell_channels = max(int(r["cells"].shape[-1]) for r in records)
     n_spawns = max(r["spawns"].shape[0] for r in records)
     n_squad = max(len(r["squad_idx"]) for r in records)
-    t_max = max(len(r["type"]) for r in records)
+    t_max = max(1, max(len(r["type"]) for r in records))
 
     arr = dict(
         cells=np.zeros((b, n_cells, n_cell_channels), dtype=np.float32),
@@ -157,10 +157,17 @@ def forward_batch_v1(model: nn.Module, batch: dict[str, Any]) -> dict[str, torch
     """
     h_type, h_target, h_cell, h_dir = shift_history(batch)
     return model(
-        batch["cells"], batch["cell_pos"], batch["cell_mask"],
-        batch["spawns"], batch["spawn_mask"],
-        batch["squad_feat"], batch["squad_mask"],
-        h_type, h_target, h_cell, h_dir,
+        batch["cells"],
+        batch["cell_pos"],
+        batch["cell_mask"],
+        batch["spawns"],
+        batch["spawn_mask"],
+        batch["squad_feat"],
+        batch["squad_mask"],
+        h_type,
+        h_target,
+        h_cell,
+        h_dir,
         batch["state"],
     )
 
@@ -185,9 +192,7 @@ class MetricsV1:
     type_true: np.ndarray = field(
         default_factory=lambda: np.zeros(len(ACTION_TYPES), dtype=np.int64)
     )
-    type_tp: np.ndarray = field(
-        default_factory=lambda: np.zeros(len(ACTION_TYPES), dtype=np.int64)
-    )
+    type_tp: np.ndarray = field(default_factory=lambda: np.zeros(len(ACTION_TYPES), dtype=np.int64))
     cell_hit: int = 0
     cell_total: int = 0
     dir_hit: int = 0
@@ -239,8 +244,12 @@ class MetricsV1:
             if true_n:
                 f1s.append(f1)
             per_class[name] = {
-                "support": true_n, "pred_n": pred_n, "tp": tp,
-                "precision": p, "recall": r, "f1": f1,
+                "support": true_n,
+                "pred_n": pred_n,
+                "tp": tp,
+                "precision": p,
+                "recall": r,
+                "f1": f1,
             }
         type_total = int(self.type_true.sum())
         return {
@@ -364,6 +373,14 @@ def train(
     vocab = Vocab(extra_tokens=vocab_tokens)
 
     train_recs, hold_recs = split_records(records, holdout_stages)
+    observation_train = sum(not len(record["type"]) for record in train_recs)
+    observation_hold = sum(not len(record["type"]) for record in hold_recs)
+    train_recs = [record for record in train_recs if len(record["type"])]
+    hold_recs = [record for record in hold_recs if len(record["type"])]
+    log(
+        f"[data] 无策略标签观察记录保留在数据集：train={observation_train}, "
+        f"holdout={observation_hold}；交由实体预训练使用"
+    )
     log(f"[data] 总 {len(records)} 局 → train {len(train_recs)} / holdout {len(hold_recs)}")
     log(f"[data] holdout 关卡: {sorted(holdout_stages)}（关卡级留出）")
     if not train_recs:
@@ -388,7 +405,9 @@ def train(
 
     train_tensors = prep(train_batches)
     hold_tensors = prep(hold_batches)
-    train_eval_tensors = train_tensors[: cfg.eval_train_batches]
+    train_eval_tensors = (
+        train_tensors[: cfg.eval_train_batches] if cfg.eval_train_batches else train_tensors
+    )
 
     device = torch.device(device_str if torch.cuda.is_available() else "cpu")
     model = TrackAPolicyV1(
@@ -405,7 +424,7 @@ def train(
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     log(
-        f"[model] 参数量 {n_params/1e6:.2f}M  vocab={vocab.size}  "
+        f"[model] 参数量 {n_params / 1e6:.2f}M  vocab={vocab.size}  "
         f"state_dim={state_dim}  grid_channels={grid_channels}  device={device}"
     )
     if resume_from is not None:
@@ -456,7 +475,7 @@ def train(
         }
         history.append(row)
         log(
-            f"[ep {ep+1}/{cfg.epochs}] loss={row['train_loss']:.4f} | "
+            f"[ep {ep + 1}/{cfg.epochs}] loss={row['train_loss']:.4f} | "
             f"train type={ts['type_acc']:.3f} f1={ts['macro_f1']:.3f} | "
             f"holdout type={hs['type_acc']:.3f} f1={hs['macro_f1']:.3f} "
             f"cell={hs['cell_acc']:.3f} dir={hs['dir_acc']:.3f} tgt={hs['target_acc']:.3f} | "
@@ -481,6 +500,7 @@ def train(
             "config": dict(cfg.__dict__),
             "vocab": vocab_tokens,
             "featvec_dim": int(featvec.shape[1]),
+            "max_squad": model.max_squad,
             "state_dim": state_dim,
             "grid_channels": grid_channels,
             "n_params": n_params,

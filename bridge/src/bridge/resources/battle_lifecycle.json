@@ -1,0 +1,9 @@
+{
+  "pause": {"roi": [1178, 33, 53, 39], "luminance": 235, "pixels": 200},
+  "templates": {
+    "stars": {"names": ["StageDrops-Stars-2.png", "StageDrops-Stars-3.png", "StageDrops-Stars-Adverse.png"], "roi": [40, 270, 320, 130], "threshold": 0.9},
+    "result_marker": {"names": ["EndOfAction.png"], "roi": [0, 270, 90, 100], "threshold": 0.9},
+    "home": {"names": ["SwitchTheme@ToggleSettingsMenu.png"], "roi": [227, 327, 159, 152], "threshold": 0.9},
+    "cost_marker": {"names": ["BattleCostFlag.png"], "roi": [1150, 480, 80, 80], "threshold": 0.8}
+  }
+}

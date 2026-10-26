@@ -34,20 +34,26 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import json
 import re
+import shutil
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+from bridge.battle_lifecycle import BattleLifecycleObserver, LifecycleObservation
 from bridge.battle_state import battle_state_to_record, summarize_states
 from bridge.blocker_watchdog import (
     BLOCKER_SETTLE_LOST,
     BlockerSentry,
     resolve_battle_result,
 )
+from bridge.candidate_coverage import execution_key, stamp_execution_identity
+from bridge.copilot_schema import MAA_ACTION_TYPES, canonical_action_type
 from bridge.episode_writer import EpisodeWriter
+from bridge.live_trace import LiveTrace
 from bridge.maa_driver import MaaDriver, load_instance_config
 from bridge.nav_maa import (
     PRTS_TASKS,
@@ -56,10 +62,11 @@ from bridge.nav_maa import (
     wait_idle,
     wait_settle,
 )
+from bridge.source_originals import missing_runtime_fields
 from bridge.state_logger import StateLogger, is_dropped_shot
 
-# 数据集动作类型 → MAA 作业动作白名单（其余如 Output/MoveCamera 丢弃）
-_MAA_ACTION_TYPES = ("Deploy", "Skill", "Retreat", "SpeedUp", "SkillDaemon")
+# 与当前 MAA CopilotConfig 一致；不再丢弃镜头、技能用法或条件字段。
+_MAA_ACTION_TYPES = MAA_ACTION_TYPES
 
 _CHAIN_TIMEOUT_S = 480.0
 """任务链最长执行时间（防卡死保护）。"""
@@ -115,26 +122,19 @@ def dataset_record_to_job_entry(rec: dict[str, Any]) -> dict[str, Any]:
     code = str(rec.get("stage_code") or "") or stage_id_to_code(stage_id)
     opers = []
     for op in rec.get("lineup", []):
-        opers.append(
-            {
-                "name": op["name"],
-                "skill": op.get("skill") or 1,
-                "skill_usage": op.get("skill_usage") or 0,
-            }
+        operator = copy.deepcopy(op)
+        operator.pop("req", None)
+        operator["skill"] = op.get("skill") if op.get("skill") is not None else 0
+        operator["skill_usage"] = (
+            op.get("skill_usage") if op.get("skill_usage") is not None else 0
         )
+        opers.append(operator)
     actions = []
     for act in rec.get("actions", []):
-        if act["type"] not in _MAA_ACTION_TYPES:
-            continue
-        out: dict[str, Any] = {"type": act["type"]}
-        for key in ("name", "location", "direction", "pre_delay", "post_delay"):
-            val = act.get(key)
-            if val not in (None, "", "None"):
-                out[key] = val
-        if act.get("kills"):
-            out["kills"] = act["kills"]
-        if act.get("costs"):
-            out["costs"] = act["costs"]
+        out = {
+            key: copy.deepcopy(value) for key, value in act.items() if value is not None
+        }
+        out["type"] = canonical_action_type(str(act.get("type", "Deploy")))
         actions.append(out)
     source = {
         "type": "prts.plus",
@@ -145,16 +145,20 @@ def dataset_record_to_job_entry(rec: dict[str, Any]) -> dict[str, Any]:
         "rating_ratio": rec.get("rating_ratio"),
         "upload_time": rec.get("upload_time", ""),
         "stage_id_raw": stage_id,
-        "lineup_raw": [
-            {"name": op["name"], "id": op.get("id"), "req": op.get("req")}
-            for op in rec.get("lineup", [])
-        ],
+        "lineup_raw": copy.deepcopy(rec.get("lineup", [])),
+        "record_raw": copy.deepcopy(rec),
+        "unsupported_action_types": sorted(
+            {a["type"] for a in actions if a["type"] not in _MAA_ACTION_TYPES}
+        ),
+        "incomplete_action_fields": missing_runtime_fields(actions),
+        "source_quality": rec.get("source_quality", "normalized_source_fallback"),
         "comment": (
             f"来源 prts.plus 作业 #{rec['id']}（ak_dataset_v0.1 copilot.jsonl），"
             "编队要求已置零回放，原始 req 见 lineup_raw"
         ),
     }
     maa_job = {
+        **copy.deepcopy(rec.get("native_script_raw") or {}),
         "stage_name": code,
         "opers": opers,
         "groups": rec.get("groups", []),
@@ -165,9 +169,11 @@ def dataset_record_to_job_entry(rec: dict[str, Any]) -> dict[str, Any]:
                 f"来源: prts.plus 作业 #{rec['id']}（ark-autoplay 数据工厂重放）"
             ),
         },
-        "minimum_required": "v4.0.0",
+        "minimum_required": (rec.get("native_script_raw") or {}).get(
+            "minimum_required", "v4.0.0"
+        ),
     }
-    return {"source": source, "maa_job": maa_job}
+    return stamp_execution_identity({"source": source, "maa_job": maa_job})
 
 
 def assert_patched_runtime(inst: dict[str, Any], cfg_path: str | Path) -> None:
@@ -206,11 +212,11 @@ def normalize_groups(groups: Any) -> list[dict[str, Any]]:
         for op in src:
             if not isinstance(op, dict) or not op.get("name"):
                 continue
-            item: dict[str, Any] = {"name": op["name"]}
-            if isinstance(op.get("skill"), int) and op["skill"] > 0:
-                item["skill"] = op["skill"]
-            if op.get("skill_usage") is not None:
-                item["skill_usage"] = op["skill_usage"]
+            item = {
+                key: copy.deepcopy(value)
+                for key, value in op.items()
+                if key not in {"id", "req"} and value is not None
+            }
             ops.append(item)
         if ops:
             out.append({"name": g.get("name") or "组", "opers": ops})
@@ -266,7 +272,12 @@ class ReplayController:
         self._writer = EpisodeWriter(self._work)
 
     def _write_maa_job(self, entry: dict[str, Any]) -> Path:
-        path = self._work / "tmp" / "maa_jobs" / f"job_{entry['source']['job_id']}.json"
+        path = (
+            self._work
+            / "tmp"
+            / "maa_jobs"
+            / f"job_{execution_key(entry['source'])}.json"
+        )
         mj = dict(entry["maa_job"])
         # groups 必须归一化成 MAA schema，否则 CopilotConfig 直接解析失败、整局白跑
         if mj.get("groups"):
@@ -281,21 +292,54 @@ class ReplayController:
         stage_code = entry["maa_job"]["stage_name"]
         stage_id = src["stage_id_raw"]
         job_id = src["job_id"]
+        storage_key = execution_key(src)
         print(f"[job {job_id}] {stage_id} ({stage_code}) 开始", flush=True)
-        summary: dict[str, Any] = {"job_id": job_id, "stage_code": stage_code}
+        summary: dict[str, Any] = {
+            "job_id": job_id,
+            "execution_key": storage_key,
+            "stage_code": stage_code,
+        }
+        if src.get("unsupported_action_types"):
+            unsupported = src["unsupported_action_types"]
+            summary.update(
+                ok=False,
+                fail_stage="schema",
+                error=f"unsupported actions retained in source: {unsupported}",
+            )
+            return summary
+        if (
+            src.get("incomplete_action_fields")
+            or src.get("source_quality") == "original_stage_unresolved"
+        ):
+            summary.update(
+                ok=False,
+                fail_stage="schema",
+                error="source fields/stage incomplete; original recovery required",
+            )
+            return summary
 
+        observation_only = not entry["maa_job"].get("actions")
+        # 只观察的作业必须在进图前验证判终资产，不能开打后才发现缺模板。
+        observer = (
+            BattleLifecycleObserver(self._driver._cfg["maa_dir"])
+            if observation_only
+            else None
+        )
+        observation: dict[str, Any] = {}
         t0 = time.time()
         t0_wall = int(t0 * 1000)
         records: list[dict[str, Any]] = []
         states: list[dict[str, Any]] = []
+        trace: LiveTrace | None = None
         # 卡死自愈哨兵（2026-10-20）：贯穿全 episode 的阻断画面轮询/消解/记账，
         # 事件最终写进 episode.json 的 blockers_dismissed，判负屏供 battle_result。
         sentry = BlockerSentry(self._driver, t0_wall)
 
         def rec(msg: str, **kw: Any) -> None:
-            records.append(
-                {"t_ms": int(time.time() * 1000) - t0_wall, "msg": msg, **kw}
-            )
+            item = {"t_ms": int(time.time() * 1000) - t0_wall, "msg": msg, **kw}
+            records.append(item)
+            if trace is not None:
+                trace.event(item)
 
         def rec_state(details: dict[str, Any]) -> None:
             """把 MaaCore 的 BattleState 回调转成协议的战场状态记录。
@@ -303,14 +347,16 @@ class ReplayController:
             需 patched MaaCore（``patches/0001-battle-state-callback.patch``）；
             官方发行版不会发此回调，届时本函数永不触发、``states`` 保持为空。
             """
-            states.append(
-                battle_state_to_record(
-                    details,
-                    int(time.time() * 1000) - t0_wall,
-                    job_id=job_id,
-                    stage_code=stage_code,
-                )
+            item = battle_state_to_record(
+                details,
+                int(time.time() * 1000) - t0_wall,
+                job_id=job_id,
+                stage_code=stage_code,
             )
+            item["raw_state"] = copy.deepcopy(details)
+            states.append(item)
+            if trace is not None:
+                trace.state(item)
 
         # 两段式（对应 ADR-0002 的正确版）：
         #   0) 先把游戏带回主界面（StartUp）——**每局都必须做**；
@@ -354,8 +400,23 @@ class ReplayController:
             return summary
         print(f"[job {job_id}] 已导航到 {stage_code} 准备界面（nav_only）", flush=True)
 
-        run_dir = self._writer.begin(stage_id, job_id)
+        run_dir = self._writer.begin(stage_id, storage_key)
         job_file = self._write_maa_job(entry)
+        shutil.copyfile(job_file, run_dir / "job.json")
+        trace = LiveTrace(
+            run_dir,
+            {
+                "episode_id": f"replay-{storage_key}",
+                "stage_id": stage_id,
+                "stage_code": stage_code,
+                "source": copy.deepcopy(src),
+                "job_file": "job.json",
+                "status": "collecting",
+                "started_at_ms": t0_wall,
+            },
+        )
+        for item in records:
+            trace.event(item)
 
         def on_shot(tag: str, rel: str) -> None:
             if tag == "tick":
@@ -431,7 +492,9 @@ class ReplayController:
             if after and tail not in prts_after:
                 prts_after.append(tail)
 
-        def drain(fresh: list[Any]) -> None:
+        def drain(
+            fresh: list[Any], *, after: bool = False, count_actions: bool = True
+        ) -> None:
             """处理一批事件（收尾时也要跑，见下方说明）。"""
             nonlocal terminal, seen_actions
             for evt in fresh:
@@ -441,7 +504,7 @@ class ReplayController:
                 elif evt.msg == "SubTaskExtraInfo":
                     what = evt.details.get("what")
                     if what == "CopilotAction":
-                        seen_actions += 1
+                        seen_actions += count_actions
                         logger.snap("action")
                     elif what == "BattleState":
                         # patched MaaCore 才有；官方发行版不会走到这里
@@ -455,9 +518,9 @@ class ReplayController:
                     why = inner.get("why") or d0.get("why") or ""
                     tag = f"{cls}:{'/'.join(str(x) for x in first)}"
                     failures.append(f"{tag} why={why}" if why else tag)
-                elif evt.msg in ("TaskChainCompleted", "TaskChainError"):
+                elif not after and evt.msg in ("TaskChainCompleted", "TaskChainError"):
                     terminal = evt.msg
-                scan_prts(evt, after=False)
+                scan_prts(evt, after=after)
 
         while self._driver.running() and terminal is None:
             # 卡死自愈：作战中弹出的阻断画面（如"干员等级过低"红横幅会让
@@ -479,6 +542,66 @@ class ReplayController:
         # （实测：episode 里明明有 TaskChainCompleted，却报"任务链收尾=None"）。
         fresh, cursor = self._driver.events_since(cursor)
         drain(fresh)
+        if observation_only and terminal == "TaskChainCompleted":
+            # 惰性导入避免 loop_runner 对本模块的复用形成装配期循环。
+            from bridge.loop_runner import (
+                MaaAppendPerActionChannel,
+                maa_tick_stream,
+                observe_battle,
+            )
+
+            frame_number = 0
+
+            def on_lifecycle(evidence: LifecycleObservation) -> None:
+                nonlocal frame_number
+                frame_number += 1
+                file = f"shots/observation_{frame_number:08d}.png"
+                evidence.frame.save(run_dir / file)
+                rec(
+                    "BattleLifecycle",
+                    active=evidence.active,
+                    result=evidence.result,
+                    home=evidence.home,
+                    scores=evidence.scores,
+                    file=file,
+                )
+
+            wait_idle(self._driver, timeout_s=30.0)
+            channel = MaaAppendPerActionChannel(self._driver, stage_code, 15.0, 0.0)
+            observation_mark = self._driver.mark()
+            observed_events: set[int] = set()
+
+            def on_observation_event(event: Any) -> None:
+                observed_events.add(id(event))
+                drain([event], after=True, count_actions=False)
+
+            samples = maa_tick_stream(
+                channel=channel,
+                driver=self._driver,
+                sentry=sentry,
+                t0_wall_ms=t0_wall,
+                job_tag=str(job_id),
+                stage_code=stage_code,
+                heartbeat_s=1.5,
+                on_event=on_observation_event,
+                observer=observer,
+                on_lifecycle=on_lifecycle,
+                loss_event_mark=battle_mark,
+            )
+            observation = observe_battle(samples, deadline=deadline)
+            if observation["observation_cause"] != "result_observed":
+                terminal = (
+                    "Timeout"
+                    if observation["observation_cause"] == "expert_chain_timeout"
+                    else "ObservationIncomplete"
+                )
+            # tick 流拥有自己的游标；之后从当前尾部接收结算事件，避免重复落盘。
+            remaining, cursor = self._driver.events_since(observation_mark)
+            drain(
+                [event for event in remaining if id(event) not in observed_events],
+                after=True,
+                count_actions=False,
+            )
         # 作战阶段结束：结算推进期改由画面型阻断器值守（settle_lost 等），
         # 避免把"等待中的静止结算屏"误判成剧情冻结乱点。
         sentry.set_battle_active(False)
@@ -511,9 +634,7 @@ class ReplayController:
         # "BLACK_DROPPED:<n>" 标记；结果帧列表里不能混入这种标记。
         result_files = [r for r in result_files if not is_dropped_shot(r)]
         fresh, cursor = self._driver.events_since(cursor)
-        for evt in fresh:
-            rec(evt.msg, details=evt.details)
-            scan_prts(evt, after=True)
+        drain(fresh, after=True, count_actions=False)
         print(
             f"[job {job_id}] 结算推进 settled={settled} snaps={len(result_files)}",
             flush=True,
@@ -529,11 +650,13 @@ class ReplayController:
             "stage_id": stage_id,
             "stage_code": stage_code,
             "source": {
+                **copy.deepcopy(src),
                 "type": "prts.plus",
                 "job_id": job_id,
                 "note": src.get("comment", ""),
             },
-            "job_file": str(job_file),
+            "job_file": "job.json",
+            "effective_squad": copy.deepcopy(entry["maa_job"].get("opers") or []),
             "result_screen_files": [result_first, result_last],
             "action_events_file": "action_events.jsonl",
             # 卡死自愈（2026-10-20）：全 episode 阻断画面消解记录
@@ -543,9 +666,12 @@ class ReplayController:
             # 胜负标记（bridge 自有字段，不动 core/protocol）：
             # "win"/"lost"/"unknown"，规则见 blocker_watchdog.resolve_battle_result。
             # 方案 §10「只留通关局」→ 下游按 battle_result == "win" 过滤。
-            "battle_result": resolve_battle_result(
+            "battle_result": observation.get("observed_terminal_result")
+            or resolve_battle_result(
                 lost_confirmed=bool(lost_hits),
-                chain_completed=(terminal == "TaskChainCompleted"),
+                chain_completed=(
+                    terminal == "TaskChainCompleted" and not observation_only
+                ),
                 settled=settled,
             ),
             # 失败阶段摘要（可选字段，bridge 自有；与 battle_result 正交）：
@@ -566,6 +692,9 @@ class ReplayController:
             "settled_back_to_briefing": settled,
             # D9：本局丢弃的黑帧数（黑帧=过场/转场伪影，不落盘只计数）
             "shots_dropped_black": logger.shots_dropped_black,
+            "observation_only": observation_only,
+            "entered_battle": observation.get("entered_battle", bool(states)),
+            "observation": observation,
         }
         ep_path = self._writer.write_episode(run_dir, episode)
         if terminal != "TaskChainCompleted":
@@ -587,6 +716,9 @@ class ReplayController:
             battle_result=episode["battle_result"],
             fail_stage=episode["fail_stage"],
             blockers_dismissed=len(sentry.events()),
+            observation_only=observation_only,
+            entered_battle=episode["entered_battle"],
+            measurement_actions=observation.get("measurement_actions", 0),
         )
         print(
             f"[job {job_id}] episode -> {ep_path}  "
@@ -629,8 +761,9 @@ class ReplayController:
 
     def _has_episode(self, entry: dict[str, Any]) -> bool:
         ep_dir = self._work / "episodes" / entry["source"]["stage_id_raw"]
-        marker = f"job-{entry['source']['job_id']}-"
+        marker = f"job-{execution_key(entry['source'])}-"
         return has_completed_episode(ep_dir, marker)
+
 
 def ensure_home(
     driver: MaaDriver,
@@ -694,9 +827,7 @@ def has_completed_episode(ep_dir: str | Path, marker: str) -> bool:
     """
     ep_dir = Path(ep_dir)
     return ep_dir.is_dir() and any(
-        p.is_dir()
-        and p.name.startswith(marker)
-        and (p / "episode.json").is_file()
+        p.is_dir() and p.name.startswith(marker) and (p / "episode.json").is_file()
         for p in ep_dir.iterdir()
     )
 

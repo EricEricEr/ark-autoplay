@@ -57,10 +57,10 @@ outputs:
 # 编码表（数字码语义 / 结构化标记 / checkpoint 分类）在 configs/tile_vocab.yaml；
 # 口径验证与实测统计见 docs/adr/0003-stagefeat-v1.md。
 stagefeat:
-  include_variants: false   # #f#（四星）/ #s（六星）变体与主关卡数据实测完全一致，默认不重复入表
-  max_grid_rows: 64         # 网格边长上限（实测最大 40×40）；超出报错而非静默截断
-  max_grid_cols: 64
-  max_route_points: 256     # 单条路线路径点上限（实测最大 132）；超出报错
+  include_variants: true   # 保留全部关卡变体
+  max_grid_rows: 0         # 0 表示不限；正数仅供显式指定的实验使用
+  max_grid_cols: 0
+  max_route_points: 0     # 0 表示保留全部路线路径点
 
 # 特征向量：数值归一化尺度（避免魔法数字进代码，见 AGENTS.md 超参纪律）。
 # 取对应属性的常见数量级，v1 仅做线性缩放；不追求严格 min-max。
@@ -123,5 +123,5 @@ featvec:
 
 # 作业转换（copilot → episode）开关
 episodes:
-  drop_when_all_actions_skipped: true   # 全部动作均为辅助类（均跳过）的作业整局丢弃
+  drop_when_all_actions_skipped: false  # 无策略标签的原文也保留，供实体预训练与溯源
   unknown_names_topk_in_report: 100     # build_report 中保留的未知名频次条数

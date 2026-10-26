@@ -10,7 +10,11 @@ import yaml
 
 from bridge.maa_driver import MaaDriver
 from bridge.nav_maa import safe_copilot_params
-from bridge.resource_policy import originite_allowed, protect_task_params
+from bridge.resource_policy import (
+    medicine_allowed,
+    originite_allowed,
+    protect_task_params,
+)
 
 
 def test_missing_permission_is_denied_and_defaults_do_not_use_supplies() -> None:
@@ -86,3 +90,28 @@ def test_shared_instance_configs_never_enable_originite() -> None:
         if ".local." in path.name:
             continue
         assert not originite_allowed(yaml.safe_load(path.read_text(encoding="utf-8")))
+
+
+def test_medicine_default_is_account_specific() -> None:
+    assert not medicine_allowed({})
+    assert medicine_allowed({"resource_policy": {"allow_medicine": True}})
+    assert safe_copilot_params(allow_medicine=True)["use_sanity_potion"] is True
+    assert protect_task_params("Copilot", {}, allow_medicine=True)["use_sanity_potion"]
+    with pytest.raises(PermissionError):
+        protect_task_params("Copilot", {"use_sanity_potion": True})
+    with pytest.raises(PermissionError):
+        protect_task_params("Fight", {"medicine": 1})
+    with pytest.raises(ValueError):
+        medicine_allowed({"resource_policy": {"allow_medicine": "true"}})
+
+
+def test_authorized_driver_copilot_eats_medicine_by_default() -> None:
+    class SDK:
+        def append_task(self, kind: str, params: dict) -> int:
+            assert kind == "Copilot" and params["use_sanity_potion"] is True
+            return 8
+
+    driver = MaaDriver.__new__(MaaDriver)
+    driver._asst = SDK()
+    driver._allow_medicine = True
+    assert driver.append_copilot("synthetic_job.json") == 8

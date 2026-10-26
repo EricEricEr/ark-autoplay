@@ -25,7 +25,7 @@ data:
   processed_dir: "${ARK_ML_ROOT}/processed"
   episodes_root: "${ARK_ML_ROOT}/../ark-data/episodes"   # 真机 episodes（只读）
   dataset_npz: "${ARK_ML_ROOT}/processed/state_action_v2.npz"  # 复用 v2 产物
-  vocab_top_k: 256
+  vocab_top_k: 0
   limit: null
 
   # 审计与（若重建时的）清洗口径与 v2 相同，保证数据池一致
@@ -63,7 +63,7 @@ training:
   lr: 3.0e-4
   weight_decay: 0.01
   grad_clip: 1.0
-  eval_train_batches: 64
+  eval_train_batches: 0
   w_type: 1.0
   w_target: 1.0
   w_cell: 1.0

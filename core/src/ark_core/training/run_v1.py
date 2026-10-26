@@ -37,9 +37,7 @@ from typing import Any
 from .run import _expand, _load_cfg, _repo_root
 
 
-def _resolve_holdout_stages(
-    d: dict[str, Any], counts: dict[str, int], log: Any
-) -> list[str]:
+def _resolve_holdout_stages(d: dict[str, Any], counts: dict[str, int], log: Any) -> list[str]:
     """确定 holdout 关卡列表：配置显式给定则复核；为空则确定性自动选取。"""
     min_eps = int(d.get("holdout_min_eps", 3))
     explicit = [str(s) for s in (d.get("holdout_stages") or [])]
@@ -62,9 +60,7 @@ def _resolve_holdout_stages(
     return explicit
 
 
-def _collect_exclusion_from_cfg(
-    d: dict[str, Any], episodes_root: Path, log: Any
-) -> Any:
+def _collect_exclusion_from_cfg(d: dict[str, Any], episodes_root: Path, log: Any) -> Any:
     """按配置扫 v2 清洗排除集（未配置任一开关时返回 None = v1 行为）。"""
     from .state_action_data import collect_exclusions
 
@@ -131,8 +127,10 @@ def _do_build(
     counts = scan_stage_counts(episodes_root)
     log(f"[build] 扫描 {len(counts)} 个关卡、{sum(counts.values())} 局有效 episode")
     holdout = _resolve_holdout_stages(d, counts, log)
-    log(f"[build] holdout 关卡 {len(holdout)} 个: {holdout}（局数 "
-        f"{ {s: counts.get(s, 0) for s in holdout} }）")
+    log(
+        f"[build] holdout 关卡 {len(holdout)} 个: {holdout}（局数 "
+        f"{ {s: counts.get(s, 0) for s in holdout} }）"
+    )
     exclusion = _collect_exclusion_from_cfg(d, episodes_root, log)
 
     delta: dict[str, Any] | None = None
@@ -156,7 +154,7 @@ def _do_build(
             out_path=out,
             holdout_stages=set(holdout),
             limit=d.get("limit"),
-            vocab_top_k=int(d.get("vocab_top_k", 256)),
+            vocab_top_k=int(d.get("vocab_top_k", 0)),
             exclusion=exclusion,
             grid_channels=grid_channels,
         )
@@ -168,7 +166,7 @@ def _do_build(
             out_path=out,
             holdout_stages=set(holdout),
             limit=d.get("limit"),
-            vocab_top_k=int(d.get("vocab_top_k", 256)),
+            vocab_top_k=int(d.get("vocab_top_k", 0)),
             exclusion=exclusion,
             grid_channels=grid_channels,
         )
@@ -194,6 +192,9 @@ def _do_build(
             "episode_len_mismatch": stats.n_episode_len_mismatch,
             "actions_dropped_tail": stats.n_actions_dropped_tail,
             "extra_states_dropped": stats.n_extra_states_dropped,
+            "unpaired_actions_retained": stats.n_unpaired_actions,
+            "unpaired_states_retained": stats.n_unpaired_states,
+            "entity_only_records": stats.n_entity_only,
             "skill_daemon_filtered": stats.n_skill_daemon,
             "unknown_job_type": stats.n_unknown_job_type,
             "align_check_mismatch": stats.n_align_check_mismatch,
@@ -202,9 +203,7 @@ def _do_build(
             {
                 "by_field": dict(sorted(exclusion.by_field.items())),
                 "by_scan": dict(sorted(exclusion.by_scan.items())),
-                "excluded_by_field": dict(
-                    sorted(Counter(exclusion.by_field.values()).items())
-                ),
+                "excluded_by_field": dict(sorted(Counter(exclusion.by_field.values()).items())),
                 "excluded_by_scan": len(exclusion.by_scan),
                 "union_n": len(exclusion.union()),
                 "applied_to_valid_pool": stats.n_excluded,
@@ -227,12 +226,12 @@ def _do_build(
         "incremental": delta,
         # 供 --increment-from 集差/审计参考：有效局目录名全量 + 清洗实际命中的交集
         "episode_dirs_valid_seen": _valid_dir_names(episodes_root),
-        "episode_dirs_excluded_applied": _excluded_dir_names(
-            episodes_root, exclusion
-        ),
+        "episode_dirs_excluded_applied": _excluded_dir_names(episodes_root, exclusion),
     }
-    log(f"[build] 保留 {n} 局（扫描 {stats.n_seen}）→ {out}  "
-        f"词表 {vocab.size}  ({rep['elapsed_s']}s)")
+    log(
+        f"[build] 保留 {n} 局（扫描 {stats.n_seen}）→ {out}  "
+        f"词表 {vocab.size}  ({rep['elapsed_s']}s)"
+    )
     if delta is not None:
         log(
             f"[build] 增量：基底 {delta['n_base_records']} + 新增 {delta['n_new_records']}"
@@ -280,13 +279,11 @@ def _make_train_cfg(cfg: dict[str, Any]) -> Any:
         w_target=float(t.get("w_target", 1.0)),
         w_cell=float(t.get("w_cell", 1.0)),
         w_dir=float(t.get("w_dir", 0.5)),
-        eval_train_batches=int(t.get("eval_train_batches", 64)),
+        eval_train_batches=int(t.get("eval_train_batches", 0)),
     )
 
 
-def _resolve_resume_ckpt(
-    cfg: dict[str, Any], increment_from: Path | None, log: Any
-) -> Path | None:
+def _resolve_resume_ckpt(cfg: dict[str, Any], increment_from: Path | None, log: Any) -> Path | None:
     """续训权重路径：``training.resume_from_ckpt`` 优先；否则取 --increment-from run
     目录里唯一的 *.pt（多个时报错，不猜）。"""
     t = cfg.get("training", {})
@@ -386,9 +383,7 @@ def _do_audit_dir(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
         holdout_stages={str(s) for s in (d.get("holdout_stages") or [])},
         exclusion=exclusion,
         limit=d.get("limit"),
-        same_job_inconsistency_dirty=float(
-            a_cfg.get("same_job_inconsistency_dirty", 0.05)
-        ),
+        same_job_inconsistency_dirty=float(a_cfg.get("same_job_inconsistency_dirty", 0.05)),
         unknown_alias_dirty=float(a_cfg.get("unknown_alias_dirty", 0.01)),
     )
     out_path = _expand(a_cfg.get("out", "${ARK_ML_ROOT}/dir_label_audit.json"))
@@ -421,8 +416,8 @@ def _do_pretrain(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
         epochs=int(p.get("epochs", 12)),
         grad_clip=float(p.get("grad_clip", 1.0)),
         seed=int(cfg.get("experiment", {}).get("seed", 42)),
-        limit_train=int(p.get("limit_train", 16000)),
-        holdout_eval_batches=int(p.get("holdout_eval_batches", 64)),
+        limit_train=int(p.get("limit_train", 0)),
+        holdout_eval_batches=int(p.get("holdout_eval_batches", 0)),
         mask_rate=float(p.get("mask_rate", 0.15)),
         ratio_mask=float(p.get("ratio_mask", 0.8)),
         ratio_random=float(p.get("ratio_random", 0.1)),
@@ -471,7 +466,7 @@ def _do_pretrain(cfg: dict[str, Any], log: Any = print) -> dict[str, Any]:
             w_target=float(s.get("w_target", 1.0)),
             w_cell=float(s.get("w_cell", 1.0)),
             w_dir=float(s.get("w_dir", 0.5)),
-            eval_train_batches=int(s.get("eval_train_batches", 64)),
+            eval_train_batches=int(s.get("eval_train_batches", 0)),
         )
         smoke = finetune_smoke(
             Path(str(rep["checkpoint"])),

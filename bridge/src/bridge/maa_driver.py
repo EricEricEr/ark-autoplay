@@ -45,7 +45,11 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from bridge.resource_policy import originite_allowed, protect_task_params
+from bridge.resource_policy import (
+    medicine_allowed,
+    originite_allowed,
+    protect_task_params,
+)
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -153,9 +157,7 @@ def _junction_alias(p: str) -> str:
                 ["cmd", "/c", "rmdir", str(alias)], capture_output=True, check=False
             )
         if alias.exists():
-            raise RuntimeError(
-                f"Junction 别名被非联接目录占用，拒绝覆盖: {alias}"
-            )
+            raise RuntimeError(f"Junction 别名被非联接目录占用，拒绝覆盖: {alias}")
     try:
         r = subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(alias), p],
@@ -209,7 +211,12 @@ def _load_asst(maa_dir: str, user_dir: str) -> dict[str, Any]:
             f"[maa] user_dir 按 8.3 短名传给 DLL: {user_dir} -> {user_dir_narrow}",
             flush=True,
         )
-    if not Asst.load(path=maa_dir_narrow, user_dir=user_dir_narrow):
+    post_battle_resources = Path(__file__).parent / "resources" / "post_battle"
+    if not Asst.load(
+        path=maa_dir_narrow,
+        incremental_path=resolve_narrow_path(post_battle_resources),
+        user_dir=user_dir_narrow,
+    ):
         raise RuntimeError(f"Asst.load 失败: {maa_dir}")
     _ASST_CTX.update({"Asst": Asst, "Message": Message, "maa_dir": maa_dir})
     return _ASST_CTX
@@ -231,6 +238,7 @@ class MaaDriver:
         """以实例配置初始化；``user_dir`` 为 MAA 运行数据落盘目录。"""
         self._cfg = instance_cfg
         self._allow_originite = originite_allowed(instance_cfg)
+        self._allow_medicine = medicine_allowed(instance_cfg)
         self._adb = str(instance_cfg["adb_path"])
         self._addr = f"{instance_cfg['adb_host']}:{instance_cfg['adb_port']}"
         ctx = _load_asst(str(instance_cfg["maa_dir"]), str(user_dir))
@@ -287,7 +295,7 @@ class MaaDriver:
         """
         cursor = self.mark() if mark is None else mark
         seen: list[MaaEvent] = []
-        deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + timeout_s if timeout_s > 0 else float("inf")
         terminal: str | None = None
         while time.monotonic() < deadline:
             fresh, cursor = self.events_since(cursor)
@@ -339,8 +347,10 @@ class MaaDriver:
         if self._asst is None:
             raise RuntimeError("尚未 connect")
         safe = protect_task_params(
-            task_type, params,
+            task_type,
+            params,
             allow_originite=getattr(self, "_allow_originite", False),
+            allow_medicine=getattr(self, "_allow_medicine", False),
         )
         return int(self._asst.append_task(task_type, safe))
 
@@ -362,7 +372,6 @@ class MaaDriver:
                 {
                     "filename": str(job_path),
                     "formation": formation,
-                    "use_sanity_potion": False,
                     "support_unit_usage": support_unit_usage,
                 },
             )
@@ -377,7 +386,10 @@ class MaaDriver:
         if self._asst is None:
             raise RuntimeError("尚未 connect")
         safe = protect_task_params(
-            "", params, allow_originite=getattr(self, "_allow_originite", False),
+            "",
+            params,
+            allow_originite=getattr(self, "_allow_originite", False),
+            allow_medicine=getattr(self, "_allow_medicine", False),
         )
         return bool(self._asst.set_task_params(int(task_id), safe))
 

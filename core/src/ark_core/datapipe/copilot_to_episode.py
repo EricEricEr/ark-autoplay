@@ -10,11 +10,12 @@
 - deploy / skill / retreat 的 target 按 deploy_vocab 形式化 subtype：
   operator（解析出 char_id）/ device（关卡装置·召唤物，保留原名）/
   category（类别通配，给 profession + sub_hint）/ unknown_name（计数、保留原文）；
-- 全部动作均为 aux 的作业整局丢弃并计数（drop_reasons.all_actions_skipped）。
+- 全部动作均为 aux 的作业仍保留原文和实体，策略标签为空。
 """
 
 from __future__ import annotations
 
+import copy
 import json
 from collections import Counter
 from dataclasses import dataclass, field
@@ -294,6 +295,8 @@ def convert_job(job: dict[str, Any], ctx: ConvertContext) -> dict[str, Any]:
         "roster_tier": tier_of_lineup(job.get("lineup"), ctx.op_index.rarity_of),
         "squad": squad,
         "groups": job.get("groups") or [],
+        "source_record_raw": copy.deepcopy(job),
+        "actions_raw": copy.deepcopy(job.get("actions") or []),
         "actions": actions_out,
         "stats": {
             "n_actions_kept": len(actions_out),
@@ -319,7 +322,7 @@ def convert_copilot(
     copilot_jsonl: Path,
     ctx: ConvertContext,
     out: Path,
-    drop_when_all_skipped: bool = True,
+    drop_when_all_skipped: bool = False,
 ) -> EpisodesBuildResult:
     """流式转换全量作业 → episodes JSONL（一行一局）。"""
     out.parent.mkdir(parents=True, exist_ok=True)

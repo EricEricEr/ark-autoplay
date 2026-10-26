@@ -53,6 +53,8 @@ torch 缺失时 `tests/unit/test_imitation.py` 自动 skip，故未装 train 组
 
 ## 代码风格
 
+用户已确认的全量数据规则：默认不按动作、格子、出怪、编队、词表、网格边长或路线点数截断数据；预训练和评测不抽取前若干局/批。无标签观察和未配对原始流保留并注明用途，监督训练只使用可配对标签。新模型采用变长编队指针；旧固定头权重按原结构兼容加载。计算批大小不代表数据集条数上限。
+
 - lint 强制走 ruff（配置见 `pyproject.toml`），提交前本地先跑 `uv run ruff check`。
 - 所有公共 API 必须有类型注解；pyright（basic 模式）不得报错。
 - docstring 与注释一律使用中文；每个模块首行 docstring 写清职责。

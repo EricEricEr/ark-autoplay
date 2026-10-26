@@ -83,7 +83,7 @@ def _do_build(cfg: dict[str, Any], log=print) -> dict[str, Any]:
         train_families=train_fams,
         out_path=out,
         limit=d.get("limit"),
-        vocab_top_k=int(d.get("vocab_top_k", 256)),
+        vocab_top_k=int(d.get("vocab_top_k", 0)),
     )
     rep = {
         "n_records": n,
@@ -142,7 +142,7 @@ def _do_train(cfg: dict[str, Any], log=print) -> dict[str, Any]:
         w_target=float(t.get("w_target", 1.0)),
         w_cell=float(t.get("w_cell", 1.0)),
         w_dir=float(t.get("w_dir", 0.5)),
-        eval_train_batches=int(t.get("eval_train_batches", 64)),
+        eval_train_batches=int(t.get("eval_train_batches", 0)),
     )
     out_dir = _expand(cfg["evaluation"]["runs_dir"]) / str(
         cfg.get("experiment", {}).get("name", "run")

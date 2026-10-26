@@ -28,7 +28,7 @@ data:
   processed_dir: "${ARK_ML_ROOT}/processed"
   episodes_jsonl: "${ARK_ML_ROOT}/processed/episodes_v0.jsonl"
   dataset_npz: "${ARK_ML_ROOT}/imitation_v0.npz"
-  vocab_top_k: 256
+  vocab_top_k: 0
   limit: null            # 调试用：只取前 N 局（null = 全量）
 
   # 真·零样本留出：整族留出，训练时完全不出现其关卡
@@ -51,7 +51,7 @@ training:
   lr: 3.0e-4
   weight_decay: 0.01
   grad_clip: 1.0
-  eval_train_batches: 64   # train 档评测抽样（holdout 恒全量）
+  eval_train_batches: 0   # train 档评测抽样（holdout 恒全量）
   # 损失权重：cell/dir 只在 deploy 上计算（见 imitate.compute_loss）
   w_type: 1.0
   w_target: 1.0

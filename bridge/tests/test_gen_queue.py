@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from bridge.gen_queue import build_queue, groups_reachable, main_code_key
+from bridge.gen_queue import build_queue, groups_reachable, main, main_code_key
 
 
 def _mk_dataset(tmp_path: Path, stages: list[dict], recs: list[dict]) -> Path:
@@ -74,6 +74,52 @@ STAGES = [
     _stage("sub_03-1-1", "sub_03-1-1", "SUB"),
     _stage("tough_14-01", "TOUGH1", "TOUGH"),
 ]
+
+
+def _uncapped_dataset(tmp_path: Path) -> Path:
+    records = [_rec(jid, "main_00-01") for jid in range(1, 5)]
+    for record, count in zip(records, (1, 31, 80, 2), strict=True):
+        record["actions"] = [{"type": "SpeedUp"} for _ in range(count)]
+    return _mk_dataset(tmp_path, [_stage("main_00-01", "0-1", "MAIN")], records)
+
+
+def test_unlimited_selection_keeps_all_jobs_and_long_actions(tmp_path: Path) -> None:
+    dataset = _uncapped_dataset(tmp_path)
+    jobs, stats = _build(dataset, per_stage=0, max_actions=0)
+    assert {job["source"]["job_id"] for job in jobs} == {1, 2, 3, 4}
+    assert max(len(job["maa_job"]["actions"]) for job in jobs) == 80
+    assert stats["per_stage_cap"] is None
+    assert stats["max_actions"] is None
+    assert "too_long" not in stats["filter"]
+
+
+def test_cli_defaults_do_not_truncate_jobs(tmp_path: Path) -> None:
+    dataset = _uncapped_dataset(tmp_path)
+    out = tmp_path / "queue.json"
+    assert main(["--dataset", str(dataset), "--out", str(out), "--no-nav-filter"]) == 0
+    document = json.loads(out.read_text(encoding="utf-8"))
+    assert len(document["jobs"]) == 4
+    assert document["stats"]["per_stage_cap"] is None
+    assert document["stats"]["max_actions"] is None
+
+
+def test_unlimited_per_stage_still_honors_explicit_total_limit(tmp_path: Path) -> None:
+    dataset = _uncapped_dataset(tmp_path)
+    jobs, _ = _build(dataset, per_stage=0, max_actions=0, limit=3)
+    assert len(jobs) == 3
+
+
+def test_explicit_positive_caps_still_work(tmp_path: Path) -> None:
+    dataset = _uncapped_dataset(tmp_path)
+    jobs, _ = _build(dataset, per_stage=2, max_actions=30)
+    assert {job["source"]["job_id"] for job in jobs} == {1, 4}
+
+
+@pytest.mark.parametrize("settings", [{"per_stage": -1}, {"max_actions": -1}])
+def test_negative_caps_rejected(tmp_path: Path, settings: dict) -> None:
+    dataset = _uncapped_dataset(tmp_path)
+    with pytest.raises(ValueError, match="0 表示不限"):
+        _build(dataset, **settings)
 
 
 def test_main_code_key() -> None:
@@ -149,9 +195,7 @@ def test_require_ops_known_drops_unknown_and_unreachable_groups(tmp_path: Path) 
         ],
     )
     ob = _mk_operbox(tmp_path, ["芬", "克洛丝"])
-    jobs, stats = _build(
-        ds, operbox_path=ob, max_missing=1, require_ops_known=True
-    )
+    jobs, stats = _build(ds, operbox_path=ob, max_missing=1, require_ops_known=True)
     kept = {j["source"]["job_id"] for j in jobs}
     assert kept == {1, 4}
     assert stats["filter"].get("opers_unknown") == 1

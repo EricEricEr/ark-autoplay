@@ -79,6 +79,42 @@ def briefing_blue_ok(img: Any, region: list[int], threshold: float = 0.25) -> bo
     return frac >= float(threshold)
 
 
+def briefing_button_ok(
+    img: Any,
+    region: list[int],
+    threshold: float = 0.25,
+    *,
+    hard_mode: bool = False,
+    hard_rgb: dict[str, int] | None = None,
+) -> bool:
+    """按难度验证开始按钮：普通为蓝色，磨难为较暗的红色。
+
+    两种颜色分别核验，防止把普通难度准备页放行为磨难。
+    磨难色彩阈值来自实际准备页，配置在 brief_blue_check.hard_rgb；
+    保留旧配置字段名以兼容已有实例，异常帧和越界区域仍拒绝。
+    """
+    if not hard_mode:
+        return briefing_blue_ok(img, region, threshold)
+    from PIL import Image  # noqa: PLC0415
+
+    arr = np.asarray(img.convert("RGB") if isinstance(img, Image.Image) else img)
+    if arr.ndim != 3 or arr.shape[2] < 3:
+        return False
+    x, y, w, h = region
+    height, width = arr.shape[:2]
+    if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width or y + h > height:
+        return False
+    patch = arr[y : y + h, x : x + w, :3].astype(np.int32)
+    r, g, b = patch[..., 0], patch[..., 1], patch[..., 2]
+    signature = hard_rgb or {}
+    red = (
+        (r > int(signature.get("min_red", 80)))
+        & (r - g > int(signature.get("red_green_gap", 35)))
+        & (r - b > int(signature.get("red_blue_gap", 35)))
+    )
+    return float(red.mean()) >= float(threshold)
+
+
 class Navigator:
     """固定点位导航器（一个模拟器实例一个 Navigator）。"""
 

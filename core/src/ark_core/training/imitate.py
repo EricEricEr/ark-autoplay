@@ -1,4 +1,4 @@
-﻿"""imitate：行为克隆训练循环（v0）。
+"""imitate：行为克隆训练循环（v0）。
 
 任务：``P(a_t | 关卡静态特征, 编队, a_<t)`` —— 见 ``imitation_data`` 模块 docstring。
 **注意**：这不是方案 §8 的 ``P(a_t | state_t)``（缺战场状态数据），是该目标在现有
@@ -53,7 +53,7 @@ class TrainConfig:
     w_target: float = 1.0
     w_cell: float = 1.0
     w_dir: float = 0.5
-    eval_train_batches: int = 64
+    eval_train_batches: int = 0
     """train 档评测抽样的 batch 数（holdout 恒全量评测）。"""
 
 
@@ -123,7 +123,7 @@ def collate(records: list[dict[str, Any]], featvec: np.ndarray) -> dict[str, Any
     n_cells = max(len(r["cells"]) for r in records)
     n_spawns = max(r["spawns"].shape[0] for r in records)
     n_squad = max(len(r["squad_idx"]) for r in records)
-    t_max = max(len(r["type"]) for r in records)
+    t_max = max(1, max(len(r["type"]) for r in records))
 
     arr = dict(
         cells=np.zeros((b, n_cells, GRID_CHANNELS), dtype=np.float32),
@@ -196,10 +196,17 @@ def forward_batch(model: nn.Module, batch: dict[str, Any]) -> dict[str, torch.Te
     """在（已迁到目标设备的）batch 上做一次前向。"""
     h_type, h_target, h_cell, h_dir = shift_history(batch)
     return model(
-        batch["cells"], batch["cell_pos"], batch["cell_mask"],
-        batch["spawns"], batch["spawn_mask"],
-        batch["squad_feat"], batch["squad_mask"],
-        h_type, h_target, h_cell, h_dir,
+        batch["cells"],
+        batch["cell_pos"],
+        batch["cell_mask"],
+        batch["spawns"],
+        batch["spawn_mask"],
+        batch["squad_feat"],
+        batch["squad_mask"],
+        h_type,
+        h_target,
+        h_cell,
+        h_dir,
     )
 
 
@@ -293,12 +300,17 @@ def train(
 
     train_recs: list[dict[str, Any]] = []
     hold_recs: list[dict[str, Any]] = []
+    entity_only = 0
     for r in records:
+        if not len(r["type"]):
+            entity_only += 1
+            continue
         fam = r["family"] or family_of(r["stage_id"])
         (hold_recs if fam in holdout_families else train_recs).append(r)
 
     log(f"[data] 总 {len(records)} 局 → train {len(train_recs)} / holdout {len(hold_recs)}")
     log(f"[data] holdout 家族: {sorted(holdout_families)}")
+    log(f"[data] 无策略标签的 {entity_only} 局保留供实体预训练，不伪造监督动作")
     if not train_recs:
         raise ValueError("训练集为空：请检查 holdout_families 设置")
 
@@ -320,7 +332,9 @@ def train(
     train_tensors = prep(train_batches)
     hold_tensors = prep(hold_batches)
     # train 档评测抽样（见循环内注释）；holdout 恒全量
-    train_eval_tensors = train_tensors[: cfg.eval_train_batches]
+    train_eval_tensors = (
+        train_tensors[: cfg.eval_train_batches] if cfg.eval_train_batches else train_tensors
+    )
 
     device = torch.device(device_str if torch.cuda.is_available() else "cpu")
     model = TrackAPolicy(
@@ -334,7 +348,7 @@ def train(
         dropout=cfg.dropout,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    log(f"[model] 参数量 {n_params/1e6:.2f}M  vocab={vocab.size}  device={device}")
+    log(f"[model] 参数量 {n_params / 1e6:.2f}M  vocab={vocab.size}  device={device}")
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     total_steps = max(1, len(train_batches) * cfg.epochs)
@@ -378,7 +392,7 @@ def train(
         }
         history.append(row)
         log(
-            f"[ep {ep+1}/{cfg.epochs}] loss={row['train_loss']:.4f} | "
+            f"[ep {ep + 1}/{cfg.epochs}] loss={row['train_loss']:.4f} | "
             f"train type={ts['type_acc']:.3f} exact={ts['exact_match']:.3f} | "
             f"holdout type={hs['type_acc']:.3f} exact={hs['exact_match']:.3f} | "
             f"{row['elapsed_s']}s"
@@ -403,6 +417,7 @@ def train(
             "config": dict(cfg.__dict__),
             "vocab": vocab_tokens,
             "featvec_dim": int(featvec.shape[1]),
+            "max_squad": model.max_squad,
             "n_params": n_params,
             "holdout_families": sorted(holdout_families),
             "best_epoch": best_epoch,

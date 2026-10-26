@@ -3,14 +3,14 @@
 用户指示（2026-10-09）："尽可能的覆盖多关卡"。
 故队列不是随机抽样，而是分层择优：
 
-1. **每关保底**：每个可用关卡至少收录 ``--per-stage`` 条中优先的若干条；
+1. **全量候选**：默认保留每关全部合格作业，不限制单份作业动作数；
 2. **地图数据过滤**（默认开）：按 :mod:`bridge.maa_stages` 判 MAA 是否有该关的
    地图数据（``Arknights-Tile-Pos``）——**这才是 Copilot 能否处理的权威判据**
    （实测覆盖 92.9% 活动关、作业维度 100%）。
    ⚠️ 曾误用 ``Fight`` 的 ``Episode{N}`` 规则过滤，把活动关整片判死（用户指出
    "这些作业都是从 MAA 作业网站下载的"），现已纠正；
 3. **低练优先**：优先 ``all_low_rarity`` / ``single_core_budget`` 桶（更易通关）；
-4. **长度可控**：动作数上限，避免超长序列拖慢工厂与训练；
+4. **显式截断**：仅在用户指定正数参数时限制每关份数或动作数，0 表示不限；
 5. **干员可达过滤**（可选，``--operbox`` 给出时启用）：只收"账号 + 1 助战"
    能凑齐阵容的作业（``缺 ≤1 名``），显著提高实际可跑率；
 6. **账号进度过滤**（可选，``--account-progress``）：main 系关卡只保留
@@ -30,7 +30,6 @@
 用法::
 
     python -m bridge.gen_queue --dataset <ak_dataset_v0.1> --out queue.json \\
-        --per-stage 2 --max-actions 30 --limit 2000 \\
         --operbox <operbox.json> --max-missing 1
 
 ⚠️ 本工具**只生成清单**，不代表账号已解锁全部关卡——未解锁的会在运行时
@@ -85,9 +84,7 @@ def groups_reachable(groups: Any, owned: set[str]) -> bool:
             continue
         src = g.get("opers") if g.get("opers") is not None else (g.get("options") or [])
         names = [
-            str(o.get("name"))
-            for o in src
-            if isinstance(o, dict) and o.get("name")
+            str(o.get("name")) for o in src if isinstance(o, dict) and o.get("name")
         ]
         if names and not any(n in owned for n in names):
             return False
@@ -137,6 +134,8 @@ def build_queue(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """构建队列，返回 ``(entries, stats)``。
 
+    ``per_stage=0`` / ``max_actions=0`` 表示相应维度不设上限。
+
     ``operbox_path`` + ``max_missing`` 给出时启用**干员可达过滤**：
     只保留"账号 + ``max_missing`` 个助战"能凑齐阵容的作业。
 
@@ -152,6 +151,8 @@ def build_queue(
     持证，且每个候选组至少 1 名持证（见模块 docstring 第 7 条 RCA）；
     丢弃分别计入 ``filter.opers_unknown`` / ``filter.groups_unreachable``。
     """
+    if per_stage < 0 or max_actions < 0:
+        raise ValueError("每关作业数和动作数参数必须非负，0 表示不限")
     progress_key = main_code_key(account_progress) if account_progress else None
     if account_progress and progress_key is None:
         raise ValueError(
@@ -169,12 +170,10 @@ def build_queue(
     if operbox_path and operbox_path.is_file():
         ob = json.loads(operbox_path.read_text(encoding="utf-8"))
         owned = {
-            str(o.get("name"))
-            for o in (ob.get("own_opers") or [])
-            if o.get("name")
+            str(o.get("name")) for o in (ob.get("own_opers") or []) if o.get("name")
         }
         # --require-req 用：干员名 -> (elite, level, skill_level)；skill 缺数据记 None
-        for o in (ob.get("own_opers") or []):
+        for o in ob.get("own_opers") or []:
             if o.get("name"):
                 owned_map[str(o.get("name"))] = o
         if max_missing is None:
@@ -259,7 +258,7 @@ def build_queue(
                 cnt["reachable"] += 1
                 if require_req:
                     bad = 0
-                    for sl in (rec.get("lineup") or []):
+                    for sl in rec.get("lineup") or []:
                         nm = str(sl.get("name") or "")
                         o = owned_map.get(nm)
                         if not o:
@@ -271,10 +270,7 @@ def build_queue(
                         if o.get("elite") is not None and (o.get("elite") or 0) < re_:
                             bad += 1
                             continue
-                        if (
-                            (o.get("elite") or 0) == re_
-                            and (o.get("level") or 0) < rl
-                        ):
+                        if (o.get("elite") or 0) == re_ and (o.get("level") or 0) < rl:
                             bad += 1
                             continue
                         sk = o.get("skill_level")
@@ -298,7 +294,7 @@ def build_queue(
     picked: list[dict[str, Any]] = []
     for sid in sorted(per_stage_map):
         rows = sorted(per_stage_map[sid], key=rank)
-        picked.extend(rows[:per_stage])
+        picked.extend(rows[:per_stage] if per_stage else rows)
 
     if limit and len(picked) > limit:
         # 类型交错 × 关卡 × 深度：避免截断时某一类型/章节霸榜
@@ -319,7 +315,7 @@ def build_queue(
                 if depth < len(stages):
                     progressed = True
                     rows = sorted(by_type[t][stages[depth]], key=rank)
-                    for d in range(per_stage):
+                    for d in range(len(rows)):
                         if d < len(rows):
                             out.append(rows[d])
                             if len(out) >= limit:
@@ -333,9 +329,7 @@ def build_queue(
 
     jobs = [dataset_record_to_job_entry(rec) for rec in picked]
     stages = {j["source"]["stage_id_raw"] for j in jobs}
-    type_of_code = {
-        str(s.get("code")): str(s.get("type")) for s in stage_idx.values()
-    }
+    type_of_code = {str(s.get("code")): str(s.get("type")) for s in stage_idx.values()}
     type_counts = Counter(
         type_of_code.get(j["maa_job"]["stage_name"], "?") for j in jobs
     )
@@ -346,8 +340,9 @@ def build_queue(
         "n_families": len(fam_counts),
         "filter": dict(cnt),
         "type_counts": dict(type_counts.most_common()),
-        "per_stage_cap": per_stage,
-        "max_actions": max_actions,
+        "per_stage_cap": per_stage or None,
+        "max_actions": max_actions or None,
+        "total_limit": limit or None,
         "account_progress": account_progress,
         "require_ops_known": require_ops_known,
     }
@@ -364,8 +359,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="MAA 运行时目录（读 Tile-Pos 判有无地图数据）",
     )
-    ap.add_argument("--per-stage", type=int, default=2)
-    ap.add_argument("--max-actions", type=int, default=30)
+    ap.add_argument(
+        "--per-stage", type=int, default=0, help="每关份数上限，默认 0 不限"
+    )
+    ap.add_argument(
+        "--max-actions", type=int, default=0, help="动作数上限，默认 0 不限"
+    )
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--types", default=None, help="只收这些类型（逗号分隔）")
     ap.add_argument("--no-nav-filter", action="store_true")
@@ -430,8 +429,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     doc = {
         "note": (
-            "由 bridge.gen_queue 生成：每关保底 + 地图数据过滤 + 低练优先 + "
-            "长度可控 + 类型均衡，可选干员可达过滤。"
+            "由 bridge.gen_queue 生成：默认不限制每关作业份数或动作数；"
+            "地图数据过滤、低练排序及可选干员可达过滤。"
             "关卡名取自数据集 stages.jsonl 的 code 字段。"
             "注意：地图数据过滤依据 Arknights-Tile-Pos（Copilot 的权威判据），"
             "**不是** Fight 的 Episode{N} 规则（后者会误杀活动关）。"

@@ -25,10 +25,15 @@ ui:
     - [ 0, 80 ]
     - [ 0, -80 ]
 
-# briefing 到达校验：“开始行动”按钮蓝色像素占比（实测 briefing=0.52，其余界面=0.0）
+# briefing 到达校验：普通蓝色 / -Hard 磨难暗红色，按请求难度分别校验。
+# 字段名保留兼容旧配置；磨难实测红色比例0.5214，主页/剧情/普通准备页为0。
 brief_blue_check:
   region: [ 1660, 955, 200, 90 ]    # [x, y, w, h]
   threshold: 0.25
+  hard_rgb:
+    min_red: 80
+    red_green_gap: 35
+    red_blue_gap: 35
 
 # 关卡锚点表：anchor=left 用左钳位态（向左滑 anchor_swipes 次），
 # anchor=right 用右钳位态；node 为该钳位态下的节点中心坐标。

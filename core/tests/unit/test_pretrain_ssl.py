@@ -24,6 +24,7 @@ from ark_core.protocol.action import ACTION_TYPES, DIRECTIONS, GRID_CHANNELS  # 
 from ark_core.training.imitate import TrainConfig, collate  # noqa: E402
 from ark_core.training.pretrain_ssl import (  # noqa: E402
     PretextConfig,
+    SSLBatchSequence,
     SSLMaskedPolicy,
     _draw_sel,
     compute_ssl_loss,
@@ -33,9 +34,23 @@ from ark_core.training.pretrain_ssl import (  # noqa: E402
     pretrain,
 )
 
-FEATVEC = np.asarray(
-    [[1.0, 0.0, 0.5], [0.0, 1.0, 0.5], [0.5, 0.5, 1.0]], dtype=np.float32
-)
+FEATVEC = np.asarray([[1.0, 0.0, 0.5], [0.0, 1.0, 0.5], [0.5, 0.5, 1.0]], dtype=np.float32)
+
+
+def test_lazy_batches_match_full_collation_and_keep_tail_after_shuffle():
+    """按需组批与旧张量口径一致，重排后每个样本及末批仍恰好出现一次。"""
+    records = _records(5)
+    for index, record in enumerate(records):
+        record["cell"] = np.full(4, index, dtype=np.int64)
+    batches = SSLBatchSequence(records, FEATVEC, 2)
+    expected = _batch(records[:2])
+    actual = batches[0]
+    for key in expected:
+        assert torch.equal(actual[key], expected[key])
+    batches.shuffle(np.random.default_rng(42))
+    assert sorted(int(value) for batch in batches for value in batch["cell"][:, 0]) == list(
+        range(5)
+    )
 
 
 def _records(n: int = 4, family: str = "main_01") -> list[dict]:
@@ -152,8 +167,15 @@ def test_mask_forward_loss_backward() -> None:
     mk = mask_batch(batch, torch.from_numpy(FEATVEC), n_targets, cfg, gen)
 
     model = SSLMaskedPolicy(
-        featvec_dim=3, vocab_size=133, max_squad=4, n_featvec_rows=3,
-        d_model=32, n_heads=4, n_layers=1, n_dec_layers=1, dropout=0.0,
+        featvec_dim=3,
+        vocab_size=133,
+        max_squad=4,
+        n_featvec_rows=3,
+        d_model=32,
+        n_heads=4,
+        n_layers=1,
+        n_dec_layers=1,
+        dropout=0.0,
     )
     from ark_core.training.pretrain_ssl import _forward_masked
 
@@ -197,9 +219,7 @@ def test_constant_baseline_eval_shapes() -> None:
 def test_load_pretrained_into_policy_v1() -> None:
     """SSLMaskedPolicy 全部 policy 键可注入 TrackAPolicyV1；只差 state_proj。"""
     kw: dict[str, Any] = dict(d_model=32, n_heads=4, n_layers=1, n_dec_layers=1, dropout=0.0)
-    ssl = SSLMaskedPolicy(
-        featvec_dim=3, vocab_size=5, max_squad=16, n_featvec_rows=3, **kw
-    )
+    ssl = SSLMaskedPolicy(featvec_dim=3, vocab_size=5, max_squad=16, n_featvec_rows=3, **kw)
     for p in ssl.parameters():  # 让权重非平凡（零初始化无法证明真的注入）
         torch.nn.init.normal_(p, std=0.02)
     v1 = TrackAPolicyV1(featvec_dim=3, vocab_size=5, max_squad=16, state_dim=12, **kw)
@@ -244,12 +264,23 @@ def test_pretrain_smoke(tmp_path) -> None:
         records=np.asarray(recs, dtype=object),
     )
     cfg = PretextConfig(
-        d_model=32, n_heads=4, n_layers=1, n_dec_layers=1, dropout=0.0,
-        batch_size=2, epochs=1, limit_train=10, holdout_eval_batches=1,
+        d_model=32,
+        n_heads=4,
+        n_layers=1,
+        n_dec_layers=1,
+        dropout=0.0,
+        batch_size=2,
+        epochs=1,
+        limit_train=10,
+        holdout_eval_batches=1,
     )
     rep = pretrain(
-        npz, cfg, holdout_families={"hold_family"}, out_dir=tmp_path / "run",
-        device_str="cpu", log=lambda *_: None,
+        npz,
+        cfg,
+        holdout_families={"hold_family"},
+        out_dir=tmp_path / "run",
+        device_str="cpu",
+        log=lambda *_: None,
     )
     assert rep["n_train"] == 2 and rep["n_holdout"] == 2
     assert "baseline_random_init" in rep and "baseline_constant" in rep

@@ -46,17 +46,29 @@ def _dataset_record() -> dict:
                 "id": "char_502_nblade",
                 "skill": 1,
                 "skill_usage": 0,
-                "req": {"elite": 1, "level": 30, "skill_level": 4, "module": 0,
-                        "potentiality": 1},
+                "req": {
+                    "elite": 1,
+                    "level": 30,
+                    "skill_level": 4,
+                    "module": 0,
+                    "potentiality": 1,
+                },
             }
         ],
         "groups": [],
         "actions": [
-            {"type": "Deploy", "name": "黑角", "location": [3, 2],
-             "direction": "Right", "kills": 0, "costs": 0,
-             "pre_delay": 0, "post_delay": 0},
+            {
+                "type": "Deploy",
+                "name": "黑角",
+                "location": [3, 2],
+                "direction": "Right",
+                "kills": 0,
+                "costs": 0,
+                "pre_delay": 0,
+                "post_delay": 0,
+            },
             {"type": "SpeedUp"},
-            {"type": "Output"},  # 白名单外，应丢弃
+            {"type": "Output"},
             {"type": "SkillDaemon"},
         ],
     }
@@ -80,12 +92,46 @@ def test_converter_shapes() -> None:
     assert "requirements" not in job["opers"][0]
 
     types = [a["type"] for a in job["actions"]]
-    assert types == ["Deploy", "SpeedUp", "SkillDaemon"]  # Output 被丢弃
+    assert types == ["Deploy", "SpeedUp", "Output", "SkillDaemon"]
     deploy = job["actions"][0]
     assert deploy["name"] == "黑角"
     assert deploy["location"] == [3, 2]
     assert deploy["direction"] == "Right"
-    assert "kills" not in deploy and "costs" not in deploy  # 0 值条件不下发
+    assert deploy["kills"] == deploy["costs"] == 0
+
+
+def test_converter_preserves_all_runtime_actions_and_conditions() -> None:
+    from bridge.copilot_schema import MAA_ACTION_TYPES
+
+    raw = _dataset_record()
+    raw["actions"] = [
+        {
+            "type": name,
+            "cost_changes": 0,
+            "cooling": 2,
+            "timeout": -1,
+            "skill_usage": 2,
+            "skill_times": 3,
+            "distance": [1, 0],
+            "begin": [1, 2, 3, 4],
+            "end": [5, 6, 7, 8],
+        }
+        for name in MAA_ACTION_TYPES
+    ]
+    entry = dataset_record_to_job_entry(raw)
+    assert entry["maa_job"]["actions"] == raw["actions"]
+    assert entry["source"]["record_raw"] == raw
+    assert not entry["source"]["unsupported_action_types"]
+    entry["maa_job"]["actions"][0]["distance"][0] = 99
+    assert raw["actions"][0]["distance"] == [1, 0]
+
+
+def test_unknown_action_remains_visible_in_source_and_execution_job() -> None:
+    raw = _dataset_record()
+    raw["actions"] = [{"type": "FutureRuntimeAction", "payload": 3}]
+    entry = dataset_record_to_job_entry(raw)
+    assert entry["maa_job"]["actions"] == raw["actions"]
+    assert entry["source"]["unsupported_action_types"] == ["FutureRuntimeAction"]
 
 
 def test_converter_prefers_dataset_stage_code() -> None:
@@ -111,6 +157,5 @@ def test_converter_defaults_skill_fields() -> None:
     rec["lineup"][0]["skill"] = None
     rec["lineup"][0]["skill_usage"] = None
     job = dataset_record_to_job_entry(rec)["maa_job"]
-    assert job["opers"][0]["skill"] == 1
+    assert job["opers"][0]["skill"] == 0
     assert job["opers"][0]["skill_usage"] == 0
-

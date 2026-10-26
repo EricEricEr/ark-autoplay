@@ -81,6 +81,7 @@ import argparse
 import contextlib
 import json
 import os
+import shutil
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -88,6 +89,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from bridge.battle_lifecycle import BattleLifecycleObserver, LifecycleObservation
 from bridge.battle_state import battle_state_to_record, summarize_states
 from bridge.blocker_watchdog import (
     BLOCKER_SETTLE_LOST,
@@ -95,6 +97,7 @@ from bridge.blocker_watchdog import (
     resolve_battle_result,
 )
 from bridge.episode_writer import EpisodeWriter
+from bridge.live_trace import LiveTrace
 from bridge.maa_driver import MaaDriver, load_instance_config
 from bridge.nav_maa import (
     PRTS_TASKS,
@@ -138,9 +141,9 @@ class LoopRunConfig:
     max_model_actions: int
     support_unit_usage: int
     channel_mode: str = "append_per_action"
-    gate_change_ticks: int = 2
+    gate_change_ticks: int = 0
     """战斗开幕闸门：连续 N 个状态帧数值签名发生变化即判定战斗已打响。"""
-    freeze_ticks: int = 6
+    freeze_ticks: int = 0
     """战斗结束判据：战斗打响后连续 N 个状态帧数值签名冻结即自然结束。"""
 
 
@@ -191,8 +194,8 @@ def load_loop_config(path: str | Path) -> LoopConfig:
         max_model_actions=int(r["max_model_actions"]),
         support_unit_usage=int(r.get("support_unit_usage", 0)),
         channel_mode=str(r.get("channel_mode", "append_per_action")),
-        gate_change_ticks=int(r.get("gate_change_ticks", 2)),
-        freeze_ticks=int(r.get("freeze_ticks", 6)),
+        gate_change_ticks=int(r.get("gate_change_ticks", 0)),
+        freeze_ticks=int(r.get("freeze_ticks", 0)),
     )
     stages = []
     for s in raw.get("stages") or []:
@@ -210,6 +213,7 @@ def load_loop_config(path: str | Path) -> LoopConfig:
     if not stages:
         raise ValueError("loop 配置缺 stages 段")
     paths = raw.get("paths") or {}
+
     # 相对路径以配置文件所在目录为根；环境变量在此展开，避免发布开发机绝对路径。
     def config_path(key: str) -> str | None:
         value = paths.get(key)
@@ -219,6 +223,7 @@ def load_loop_config(path: str | Path) -> LoopConfig:
         if Path(expanded).is_absolute() or expanded.startswith("/"):
             return expanded
         return str((Path(path).resolve().parent / expanded).resolve())
+
     overrides = raw.get("infer_overrides")
     if overrides is not None and not isinstance(overrides, dict):
         raise ValueError("infer_overrides 必须是 mapping")
@@ -297,6 +302,8 @@ class TickSample:
 
     state: dict[str, Any] | None
     heartbeat_ok: bool = True
+    battle_active: bool | None = None
+    terminal_result: str | None = None
 
 
 @dataclass
@@ -318,6 +325,7 @@ class LoopStats:
     battle_started: bool = False
     """战斗开幕闸门是否已开（见 battle_decision_loop 的闸门说明）。"""
     terminal_cause: str | None = None
+    terminal_result: str | None = None
     """收尾原因：out_of_battle / battle_never_started / no_state_timeout /
     timeout / channel_dead / action_cap / stream_end。"""
     model_actions: list[dict[str, Any]] = field(default_factory=list)
@@ -449,25 +457,42 @@ def battle_decision_loop(
     for sample in tick_samples:
         if on_tick is not None:
             on_tick()
-        if clock() - t0 > cfg.chain_timeout_s:
-            stats.terminal_cause = "timeout" if stats.battle_started else (
-                "battle_never_started"
+        if cfg.chain_timeout_s > 0 and clock() - t0 > cfg.chain_timeout_s:
+            stats.terminal_cause = (
+                "timeout" if stats.battle_started else ("battle_never_started")
+            )
+            break
+        if sample.terminal_result is not None:
+            if sample.terminal_result in ("win", "lost"):
+                stats.battle_started = True
+            stats.terminal_result = sample.terminal_result
+            stats.terminal_cause = (
+                "out_of_battle"
+                if sample.terminal_result in ("win", "lost")
+                else "left_battle_no_result"
             )
             break
         if not sample.heartbeat_ok:
-            stats.terminal_cause = "channel_dead"
-            break
+            continue
         stats.heartbeats += 1
         state = sample.state
         if state is None:
             no_state += 1
             stats.no_state_max_streak = max(stats.no_state_max_streak, no_state)
-            if no_state >= cfg.no_state_timeout_ticks:
+            if (
+                cfg.no_state_timeout_ticks > 0
+                and no_state >= cfg.no_state_timeout_ticks
+            ):
                 stats.terminal_cause = "no_state_timeout"
                 break
             continue
         no_state = 0
         stats.ticks += 1
+        if sample.battle_active is not None:
+            if sample.battle_active:
+                stats.battle_started = True
+            else:
+                continue
         sig = _vitals_sig(state)
         if not stats.battle_started:
             # 上游明确报 in_battle=true（理论上 Output 链不会发生，防御性放行）
@@ -476,7 +501,7 @@ def battle_decision_loop(
                 stats.battle_started = True
             elif prev_sig is not None and sig != prev_sig:
                 change_streak += 1
-                if change_streak >= cfg.gate_change_ticks:
+                if cfg.gate_change_ticks > 0 and change_streak >= cfg.gate_change_ticks:
                     stats.battle_started = True
             else:
                 change_streak = 0
@@ -486,13 +511,16 @@ def battle_decision_loop(
         else:
             if sig == prev_sig:
                 frozen_streak += 1
-                if frozen_streak >= cfg.freeze_ticks:
+                if cfg.freeze_ticks > 0 and frozen_streak >= cfg.freeze_ticks:
                     stats.terminal_cause = "out_of_battle"
                     break
             else:
                 frozen_streak = 0
             prev_sig = sig
-        if stats.actions_sent + stats.actions_lost >= cfg.max_model_actions:
+        if (
+            cfg.max_model_actions > 0
+            and stats.actions_sent + stats.actions_lost >= cfg.max_model_actions
+        ):
             stats.terminal_cause = "action_cap"
             break
         action = policy.decide(
@@ -614,9 +642,7 @@ class MaaAppendPerActionChannel:
         self._tid = tid
         self.opens += 1
         # 先参后启：链起跑时动作子任务已就位，不存在"零 subtask 速收"竞态
-        if not self._drv.set_task_params(
-            tid, SingleStepParams.action_params(actions)
-        ):
+        if not self._drv.set_task_params(tid, SingleStepParams.action_params(actions)):
             return False
         if not self._drv.start():
             # 上一条链可能未完全 idle（沿用 wait_idle 恢复语义）
@@ -733,6 +759,9 @@ def maa_tick_stream(
     heartbeat_s: float,
     on_event: Callable[[MaaEvent], None],
     on_state: Callable[[dict[str, Any]], None] | None = None,
+    observer: BattleLifecycleObserver | None = None,
+    on_lifecycle: Callable[[LifecycleObservation], None] | None = None,
+    loss_event_mark: int = 0,
 ) -> Iterator[TickSample]:
     """真机节拍流生成器：每拍 = 一次 Output 心跳 + 该拍窗口内最新 BattleState。
 
@@ -743,8 +772,21 @@ def maa_tick_stream(
     - **无限生成**：收尾判据全在 :func:`battle_decision_loop` 一侧。
     """
     cursor = driver.mark()
+    was_active = False
+    home_frames = 0
     while True:
-        hb_ok = channel.push_actions([dict(HEARTBEAT_ACTION)])
+        try:
+            hb_ok = channel.push_actions([dict(HEARTBEAT_ACTION)])
+        except Exception as error:
+            hb_ok = False
+            on_event(
+                MaaEvent(
+                    int(time.time() * 1000),
+                    0,
+                    "HeartbeatUnavailable",
+                    {"error": f"{type(error).__name__}: {error}"},
+                )
+            )
         deadline = time.monotonic() + heartbeat_s
         latest: dict[str, Any] | None = None
         while time.monotonic() < deadline:
@@ -765,10 +807,87 @@ def maa_tick_stream(
                     stage_code=stage_code,
                 )
                 latest = rec
+                rec["raw_state"] = details
                 if on_state is not None:
                     on_state(rec)
             time.sleep(_EVENT_DRAIN_S)
-        yield TickSample(state=latest, heartbeat_ok=hb_ok)
+        active = None
+        result = None
+        if observer is not None:
+            try:
+                observation = observer.observe(driver.screencap())
+            except Exception as error:
+                on_event(
+                    MaaEvent(
+                        int(time.time() * 1000),
+                        0,
+                        "LifecycleCaptureUnavailable",
+                        {"error": f"{type(error).__name__}: {error}"},
+                    )
+                )
+                yield TickSample(state=latest, heartbeat_ok=hb_ok)
+                continue
+            active = observation.active
+            result = observation.result
+            was_active = was_active or observation.active
+            home_frames = home_frames + 1 if observation.home and was_active else 0
+            if result is None and home_frames >= 2:
+                result = "unknown"
+            if sentry.hits_since(loss_event_mark, BLOCKER_SETTLE_LOST):
+                result = "lost"
+            if on_lifecycle is not None:
+                on_lifecycle(observation)
+            if (
+                was_active
+                and not active
+                and result is None
+                and not observation.home
+                and wait_idle(driver, timeout_s=_IDLE_RESTART_WAIT_S)
+            ):
+                mark = driver.mark()
+                tid = driver.append_task(
+                    "Custom", {"task_names": ["ArkBattle@StoryEntry"]}
+                )
+                if tid and driver.start():
+                    driver.wait_chain(15.0, mark=mark)
+                    fresh, cursor = driver.events_since(cursor)
+                    for event in fresh:
+                        on_event(event)
+        yield TickSample(
+            state=latest,
+            heartbeat_ok=hb_ok,
+            battle_active=active,
+            terminal_result=result,
+        )
+
+
+def observe_battle(
+    samples: Iterable[TickSample],
+    *,
+    deadline: float,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """空作业只采集真实战斗，不发明战术动作；保留专家链既有超时边界。"""
+    summary: dict[str, Any] = {
+        "entered_battle": False,
+        "observed_terminal_result": None,
+        "measurement_actions": 0,
+        "measurement_failures": 0,
+        "observation_cause": "stream_end",
+    }
+    for sample in samples:
+        summary["measurement_actions"] += 1
+        summary["measurement_failures"] += not sample.heartbeat_ok
+        summary["entered_battle"] |= sample.battle_active is True
+        if sample.terminal_result is not None:
+            summary["observed_terminal_result"] = sample.terminal_result
+            summary["entered_battle"] |= sample.terminal_result in ("win", "lost")
+            summary["observation_cause"] = "result_observed"
+            break
+        if deadline > 0 and clock() >= deadline:
+            summary["observation_cause"] = "expert_chain_timeout"
+            break
+    return summary
 
 
 def load_core_policy(
@@ -911,7 +1030,11 @@ class LoopRunner:
         cursor = mark
         terminal: str | None = None
         failures: list[str] = []
-        deadline = time.monotonic() + self._cfg.run.shell_timeout_s
+        deadline = (
+            time.monotonic() + self._cfg.run.shell_timeout_s
+            if self._cfg.run.shell_timeout_s > 0
+            else float("inf")
+        )
         while self._driver.running() and terminal is None:
             sentry.poll()
             fresh, cursor = self._driver.events_since(cursor)
@@ -947,8 +1070,7 @@ class LoopRunner:
         cfg = self._cfg.run
         tag = f"[loop {stage.stage_id}]"
         print(
-            f"{tag} 开始（参考作业 #{stage.ref_job_id}，"
-            f"预期动作≈{stage.total_proxy}）",
+            f"{tag} 开始（参考作业 #{stage.ref_job_id}，预期动作≈{stage.total_proxy}）",
             flush=True,
         )
         summary: dict[str, Any] = {
@@ -956,15 +1078,20 @@ class LoopRunner:
             "stage_code": stage.stage_code,
             "ref_job_id": stage.ref_job_id,
         }
+        lifecycle_observer = BattleLifecycleObserver(self._driver._cfg["maa_dir"])
         t0 = time.time()
         t0_wall = int(t0 * 1000)
         records: list[dict[str, Any]] = []
         states: list[dict[str, Any]] = []
+        trace: LiveTrace | None = None
         sentry = BlockerSentry(self._driver, t0_wall)
 
         def rec(msg: str, **kw: Any) -> None:
             t_ms = int(time.time() * 1000) - t0_wall
-            records.append({"t_ms": t_ms, "msg": msg, **kw})
+            item = {"t_ms": t_ms, "msg": msg, **kw}
+            records.append(item)
+            if trace is not None:
+                trace.event(item)
 
         # 进图：回主页 → nav_only 到 briefing（原样复用 replay_controller 两段式
         # 与 retry 逻辑；patch 0002 + 终点屏校验防线同工厂线）
@@ -994,6 +1121,19 @@ class LoopRunner:
 
         run_dir = self._writer.begin(stage.stage_id, f"model-{stage.ref_job_id}")
         job_file = self._write_shell_job(stage)
+        shutil.copyfile(job_file, run_dir / "job.json")
+        trace = LiveTrace(
+            run_dir,
+            {
+                "stage_id": stage.stage_id,
+                "stage_code": stage.stage_code,
+                "source": {"type": "model_loop", "ref_job_id": stage.ref_job_id},
+                "status": "collecting",
+                "started_at_ms": t0_wall,
+            },
+        )
+        for item in records:
+            trace.event(item)
 
         def on_shot(tag_s: str, rel: str) -> None:
             if tag_s == "tick":
@@ -1027,8 +1167,9 @@ class LoopRunner:
             return summary
         logger.set_active(True)
         shell_terminal, shell_failures = self._wait_shell(sentry, mark, rec)
-        print(f"{tag} 编队壳收尾={shell_terminal} failures={shell_failures}",
-              flush=True)
+        print(
+            f"{tag} 编队壳收尾={shell_terminal} failures={shell_failures}", flush=True
+        )
         wait_idle(self._driver, timeout_s=_IDLE_RESTART_WAIT_S)
         if shell_terminal != "TaskChainCompleted":
             logger.stop()
@@ -1049,10 +1190,13 @@ class LoopRunner:
         # 心跳链回收上限秒级（两拍冗余）；动作链放宽到 Deploy 自等待窗口
         # （等费/等 CD 由上游 wait_condition 处理，上限内仍算链未回收）
         hb_timeout_s = max(2.0 * cfg.heartbeat_s, 15.0)
-        act_timeout_s = max(20.0 * cfg.heartbeat_s, 90.0)
+        act_timeout_s = 0.0
         channel = make_channel(
-            cfg.channel_mode, self._driver, stage.stage_code,
-            hb_timeout_s, act_timeout_s,
+            cfg.channel_mode,
+            self._driver,
+            stage.stage_code,
+            hb_timeout_s,
+            act_timeout_s,
         )
         if cfg.channel_mode == "single_step_inplace" and not channel.open_stage():
             sentry.set_battle_active(False)
@@ -1072,6 +1216,27 @@ class LoopRunner:
                 if tail in PRTS_TASKS and tail not in prts_seen:
                     prts_seen.append(tail)
 
+        lifecycle_frame_number = 0
+
+        def on_state(state: dict[str, Any]) -> None:
+            states.append(state)
+            if trace is not None:
+                trace.state(state)
+
+        def on_lifecycle(observation: LifecycleObservation) -> None:
+            nonlocal lifecycle_frame_number
+            lifecycle_frame_number += 1
+            file = f"shots/lifecycle_{lifecycle_frame_number:08d}.png"
+            observation.frame.save(run_dir / file)
+            rec(
+                "BattleLifecycle",
+                active=observation.active,
+                result=observation.result,
+                home=observation.home,
+                scores=observation.scores,
+                file=file,
+            )
+
         samples = maa_tick_stream(
             channel=channel,
             driver=self._driver,
@@ -1081,7 +1246,10 @@ class LoopRunner:
             stage_code=stage.stage_code,
             heartbeat_s=cfg.heartbeat_s,
             on_event=on_event,
-            on_state=states.append,
+            on_state=on_state,
+            observer=lifecycle_observer,
+            on_lifecycle=on_lifecycle,
+            loss_event_mark=battle_mark,
         )
         recorded = RecordingPolicy(
             policy, lambda act, tick: rec("LoopAction", action=act, tick=tick)
@@ -1111,19 +1279,38 @@ class LoopRunner:
         logger.set_active(False)
         rel = logger.snap("settle")
         result_files = [rel] if not is_dropped_shot(rel) else []
+        settle_mark = self._driver.mark()
         settled = wait_settle(
             self._driver, timeout_s=cfg.settle_timeout_s, watchdog=sentry
         )
+        settle_events, _ = self._driver.events_since(settle_mark)
+        for event in settle_events:
+            on_event(event)
+            details = event.details if isinstance(event.details, dict) else {}
+            if event.msg == "SubTaskExtraInfo" and details.get("what") == "BattleState":
+                raw = details.get("details") or {}
+                state = battle_state_to_record(
+                    raw,
+                    int(time.time() * 1000) - t0_wall,
+                    job_id=f"model-{stage.ref_job_id}",
+                    stage_code=stage.stage_code,
+                )
+                state["raw_state"] = raw
+                on_state(state)
         lost_hits = sentry.hits_since(battle_mark, BLOCKER_SETTLE_LOST)
         logger.stop()
 
         self._writer.write_events(run_dir, records)
         states_path = self._writer.write_battle_states(run_dir, states)
         state_summary = summarize_states(states)
-        battle_result = resolve_battle_result(
-            lost_confirmed=bool(lost_hits),
-            chain_completed=(stats.terminal_cause == "out_of_battle"),
-            settled=settled,
+        battle_result = (
+            stats.terminal_result
+            if stats.terminal_result in ("win", "lost")
+            else resolve_battle_result(
+                lost_confirmed=bool(lost_hits),
+                chain_completed=False,
+                settled=settled,
+            )
         )
         # fail_stage 口径（本运行器）：闭环观测到战斗自然结束 → done；否则战斗段
         # 失败（超时/断流/通道拒收）。编队壳失败在上方提前返回、不产生 episode，
@@ -1139,7 +1326,8 @@ class LoopRunner:
                 "ref_job_id": stage.ref_job_id,
                 "note": stage.note,
             },
-            "job_file": str(job_file),
+            "job_file": "job.json",
+            "effective_squad": stage.opers,
             "result_screen_files": [
                 result_files[0] if result_files else "",
                 result_files[-1] if result_files else "",
@@ -1155,6 +1343,7 @@ class LoopRunner:
             "model_actions": stats.model_actions,
             "model_loop": {
                 "terminal_cause": stats.terminal_cause,
+                "observed_terminal_result": stats.terminal_result,
                 "ticks": stats.ticks,
                 "heartbeats": stats.heartbeats,
                 "actions_sent": stats.actions_sent,

@@ -87,9 +87,8 @@ from ..protocol.action import (
     GRID_CHANNELS,
 )
 from ..training.imitation_data import (
+    CELL_INDEX_SCALE,
     DIR_TO_IDX,
-    MAX_CELLS,
-    MAX_SQUAD,
     TYPE_TO_IDX,
     UNK_TARGET,
     Vocab,
@@ -216,15 +215,15 @@ def load_track_a_v1(ckpt_path: Path | str, *, device: str = "cpu") -> LoadedMode
     cfg: dict[str, Any] = blob.get("config") or {}
     vocab = Vocab(extra_tokens=[str(x) for x in blob["vocab"]])
     model_kwargs = {
-        k: cfg[k]
-        for k in ("d_model", "n_heads", "n_layers", "n_dec_layers", "dropout")
-        if k in cfg
+        k: cfg[k] for k in ("d_model", "n_heads", "n_layers", "n_dec_layers", "dropout") if k in cfg
     }
     grid_channels = int(blob.get("grid_channels", GRID_CHANNELS))
+    target_rows = int(blob["state_dict"]["head_target.weight"].shape[0])
+    checkpoint_squad_slots = int(blob.get("max_squad", target_rows - 1 - vocab.size))
     model = TrackAPolicyV1(
         featvec_dim=int(blob["featvec_dim"]),
         vocab_size=vocab.size,
-        max_squad=MAX_SQUAD,
+        max_squad=checkpoint_squad_slots,
         state_dim=int(blob["state_dim"]),
         grid_channels=grid_channels,
         **model_kwargs,  # type: ignore[arg-type]
@@ -234,8 +233,14 @@ def load_track_a_v1(ckpt_path: Path | str, *, device: str = "cpu") -> LoadedMode
     meta = {
         k: blob[k]
         for k in (
-            "config", "featvec_dim", "state_dim", "n_params",
-            "best_epoch", "best_holdout", "holdout_stages", "grid_channels",
+            "config",
+            "featvec_dim",
+            "state_dim",
+            "n_params",
+            "best_epoch",
+            "best_holdout",
+            "holdout_stages",
+            "grid_channels",
         )
         if k in blob
     }
@@ -344,8 +349,6 @@ class StageContext:
 
         rows, cols = int(sf["rows"]), int(sf["cols"])
         n_cells = rows * cols
-        if n_cells > MAX_CELLS:
-            raise ValueError(f"格数 {n_cells} 超训练上限 MAX_CELLS={MAX_CELLS}，本关卡不支持")
         cells = np.asarray(sf["grid"], dtype=np.float32).reshape(n_cells, GRID_CHANNELS)
         if grid_channels > GRID_CHANNELS:
             # 无可用路线几何的关 routefeat 内部退化为全零（与训练侧降级口径一致）
@@ -361,8 +364,12 @@ class StageContext:
         if spawns_raw:
             sp = np.asarray(
                 [
-                    [float(s.get("t_ms") or 0) / 1000.0, float(s.get("wave") or 0),
-                     float(s.get("route") or 0), 1.0 if s.get("enemy_matched") else 0.0]
+                    [
+                        float(s.get("t_ms") or 0) / 1000.0,
+                        float(s.get("wave") or 0),
+                        float(s.get("route") or 0),
+                        1.0 if s.get("enemy_matched") else 0.0,
+                    ]
                     for s in spawns_raw
                 ],
                 dtype=np.float32,
@@ -373,7 +380,7 @@ class StageContext:
         else:
             sp = np.zeros((0, 4), dtype=np.float32)
 
-        names = list(squad_names)[:MAX_SQUAD]
+        names = list(squad_names)
         if not names:
             raise ValueError("编队为空")
         squad_tokens: list[str] = []
@@ -389,9 +396,17 @@ class StageContext:
                 squad_feat[j] = featvec_mat[row_idx]
 
         return cls(
-            stage_id=stage_id, rows=rows, cols=cols, vocab=vocab,
-            squad_names=names, squad_tokens=squad_tokens, name2cid=name2cid,
-            cells=cells, cell_pos=cell_pos, spawns=sp, squad_feat=squad_feat,
+            stage_id=stage_id,
+            rows=rows,
+            cols=cols,
+            vocab=vocab,
+            squad_names=names,
+            squad_tokens=squad_tokens,
+            name2cid=name2cid,
+            cells=cells,
+            cell_pos=cell_pos,
+            spawns=sp,
+            squad_feat=squad_feat,
         )
 
     @classmethod
@@ -411,11 +426,7 @@ class StageContext:
         featvec_mat = np.asarray(featvec, dtype=np.float32)
         squad_idx = np.asarray(record["squad_idx"], dtype=np.int64)
         n = int(len(squad_idx))
-        names = (
-            list(squad_names)[:n]
-            if squad_names is not None
-            else [f"slot{i}" for i in range(n)]
-        )
+        names = list(squad_names)[:n] if squad_names is not None else [f"slot{i}" for i in range(n)]
         squad_feat = np.zeros((n, featvec_mat.shape[1]), dtype=np.float32)
         for j, idx in enumerate(squad_idx):
             if idx >= 0:
@@ -623,7 +634,7 @@ def decode_action(
         mask = np.zeros(len(target_logits), dtype=np.bool_)
         if act == "deploy":
             if cfg.allow_vocab_targets:
-                mask[1:ctx.vocab.size] = True
+                mask[1 : ctx.vocab.size] = True
             for slot in range(min(len(ctx.squad_names), n_slot_room)):
                 if slot_deployable(slot):
                     mask[squad_start + slot] = True
@@ -673,8 +684,11 @@ def decode_action(
             # 撤退余量闸门：retreat 的型 logit 必须压过其余类型最高 logit 一个余量
             if cfg.retreat_min_logit_margin > 0.0:
                 others = max(
-                    (float(type_logits[j]) for j, a2 in enumerate(ACTION_TYPES)
-                     if a2 != "retreat" and j < len(type_logits)),
+                    (
+                        float(type_logits[j])
+                        for j, a2 in enumerate(ACTION_TYPES)
+                        if a2 != "retreat" and j < len(type_logits)
+                    ),
                     default=float("-inf"),
                 )
                 if float(type_logits[i]) - others < cfg.retreat_min_logit_margin:
@@ -691,11 +705,7 @@ def decode_action(
 
     # 无目标命名语义的重复护栏：speed/bullet_time 按 type 连击整类屏蔽
     for act in ("speed", "bullet_time"):
-        if (
-            cfg.repeat_guard > 0
-            and repeat_run >= cfg.repeat_guard
-            and repeat_type == act
-        ):
+        if cfg.repeat_guard > 0 and repeat_run >= cfg.repeat_guard and repeat_type == act:
             feasible[act] = False
 
     # ---- 倍速语义闸门（次数不限、只在必要时切换；关闭则回落 allow_speedup） ----
@@ -716,9 +726,7 @@ def decode_action(
             feasible["speed"] = (not any_real_up) and speed_elapsed_ok
 
     allowed = [
-        (float(type_logits[i]), i)
-        for i, act in enumerate(ACTION_TYPES)
-        if feasible.get(act)
+        (float(type_logits[i]), i) for i, act in enumerate(ACTION_TYPES) if feasible.get(act)
     ]
     for _score, t_idx in sorted(allowed, key=lambda x: -x[0]):
         act = ACTION_TYPES[t_idx]
@@ -789,10 +797,8 @@ def greedy_step(
     h_type = _lt([len(ACTION_TYPES)] + [e[0] for e in enc])
     h_target = _lt([0] + [e[1] for e in enc])
     h_dir = _lt([0] + [e[3] for e in enc])
-    cell_idx = torch.as_tensor(
-        [[0] + [e[2] for e in enc]], dtype=torch.float32, device=device
-    )
-    h_cell = torch.stack([cell_idx / float(MAX_CELLS), torch.zeros_like(cell_idx)], dim=-1)
+    cell_idx = torch.as_tensor([[0] + [e[2] for e in enc]], dtype=torch.float32, device=device)
+    h_cell = torch.stack([cell_idx / CELL_INDEX_SCALE, torch.zeros_like(cell_idx)], dim=-1)
     # hist_state 平铺当前快照、不右移（诚实简化，见模块 docstring）
     hist_state = torch.as_tensor(
         np.tile(sv, (seq, 1))[None, :, :], dtype=torch.float32, device=device
@@ -818,6 +824,13 @@ def greedy_step(
     )
     last = {k: v[0, -1].detach().float().cpu().numpy() for k, v in out.items()}
     return decode_action(
-        last["type"], last["target"], last["cell"], last["dir"], ctx, battle_state, cfg,
-        history=history, step_index=t,
+        last["type"],
+        last["target"],
+        last["cell"],
+        last["dir"],
+        ctx,
+        battle_state,
+        cfg,
+        history=history,
+        step_index=t,
     )

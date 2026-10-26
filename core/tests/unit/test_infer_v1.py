@@ -92,9 +92,14 @@ def _bs(**over) -> dict:
     return bs
 
 
-def _four_heads(ctx: StageContext, type_rank: list[int], target_rank: list[int],
-                cell_rank: list[int], dir_rank: list[int]):
-    n_targets = 1 + ctx.vocab.size + MAX_SQUAD
+def _four_heads(
+    ctx: StageContext,
+    type_rank: list[int],
+    target_rank: list[int],
+    cell_rank: list[int],
+    dir_rank: list[int],
+):
+    n_targets = 1 + ctx.vocab.size + len(ctx.squad_names)
     return (
         _logits(len(ACTION_TYPES), type_rank),
         _logits(n_targets, target_rank),
@@ -171,10 +176,13 @@ def test_cost_insufficient_skips_to_next_target():
     ctx = _ctx()
     heads = _four_heads(ctx, [TYPE_TO_IDX["deploy"]], [_SLOT0, _SLOT1], [7], [0])
     # 玫兰莎 cost=10 > costs=5（margin=0）被判非法；克洛丝 cost=3 可行
-    bs = _bs(costs=5.0, hand=[
-        {"name": "玫兰莎", "cost": 10, "available": True, "cooling": False},
-        {"name": "克洛丝", "cost": 3, "available": True, "cooling": False},
-    ])
+    bs = _bs(
+        costs=5.0,
+        hand=[
+            {"name": "玫兰莎", "cost": 10, "available": True, "cooling": False},
+            {"name": "克洛丝", "cost": 3, "available": True, "cooling": False},
+        ],
+    )
     act = decode_action(*heads, ctx, bs)
     assert act is not None and act["type"] == "Deploy"
     assert act["name"] == "克洛丝", "费用不足的首选目标未被屏蔽到次优"
@@ -185,10 +193,13 @@ def test_cost_margin_relaxes_affordability():
     ctx = _ctx()
     heads = _four_heads(ctx, [TYPE_TO_IDX["deploy"]], [_SLOT0, _SLOT1], [7], [0])
     cfg = InferConfig(cost_margin=6.0)  # 10 <= 5 + 6 → 玫兰莎可行
-    bs = _bs(costs=5.0, hand=[
-        {"name": "玫兰莎", "cost": 10, "available": True, "cooling": False},
-        {"name": "克洛丝", "cost": 3, "available": True, "cooling": False},
-    ])
+    bs = _bs(
+        costs=5.0,
+        hand=[
+            {"name": "玫兰莎", "cost": 10, "available": True, "cooling": False},
+            {"name": "克洛丝", "cost": 3, "available": True, "cooling": False},
+        ],
+    )
     act = decode_action(*heads, ctx, bs, cfg)
     assert act is not None and act["name"] == "玫兰莎"
 
@@ -197,10 +208,12 @@ def test_cooling_and_unavailable_skipped():
     """冷却中 / 不可用的手牌同样被屏蔽，回退到下一合法槽位。"""
     ctx = _ctx()
     heads = _four_heads(ctx, [TYPE_TO_IDX["deploy"]], [_SLOT0, _SLOT1], [7], [0])
-    bs = _bs(hand=[
-        {"name": "玫兰莎", "cost": 5, "available": True, "cooling": True},
-        {"name": "克洛丝", "cost": 3, "available": True, "cooling": False},
-    ])
+    bs = _bs(
+        hand=[
+            {"name": "玫兰莎", "cost": 5, "available": True, "cooling": True},
+            {"name": "克洛丝", "cost": 3, "available": True, "cooling": False},
+        ]
+    )
     act = decode_action(*heads, ctx, bs)
     assert act is not None and act["name"] == "克洛丝"
 
@@ -236,7 +249,9 @@ def test_type_switch_when_preferred_type_unfeasible():
     heads = _four_heads(
         ctx,
         [TYPE_TO_IDX["deploy"], TYPE_TO_IDX["speed"]],
-        [_SLOT0], [7], [0],
+        [_SLOT0],
+        [7],
+        [0],
     )
     cfg = InferConfig(allow_vocab_targets=False, allow_bullet_time=False)
     act = decode_action(*heads, ctx, _bs(hand=[]), cfg)
@@ -247,9 +262,7 @@ def test_all_illegal_returns_none():
     """全部候选类型判死（含 speed/bullet_time 被开关关闭）→ None。"""
     ctx = _ctx()
     heads = _four_heads(ctx, [TYPE_TO_IDX["deploy"]], [_SLOT0], [7], [0])
-    cfg = InferConfig(
-        allow_speedup=False, allow_bullet_time=False, allow_vocab_targets=False
-    )
+    cfg = InferConfig(allow_speedup=False, allow_bullet_time=False, allow_vocab_targets=False)
     act = decode_action(*heads, ctx, _bs(hand=[], deployed=[]), cfg)
     assert act is None
 
@@ -315,7 +328,9 @@ def test_speed_gate_masks_speed_when_meaningful_action_available():
     heads = _four_heads(
         ctx,
         [TYPE_TO_IDX["speed"], TYPE_TO_IDX["deploy"]],
-        [_SLOT0], [7], [0],
+        [_SLOT0],
+        [7],
+        [0],
     )
     act = decode_action(*heads, ctx, _bs(in_speedup=False))
     assert act is not None and act["type"] == "Deploy"
@@ -338,7 +353,7 @@ def test_retreat_logit_margin_gate():
     """撤退余量闸门：retreat logit − 其余类型最高 logit < 余量 → 屏蔽。"""
     ctx = _ctx()
     bs = _bs(hand=[], deployed=[{"name": "玫兰莎", "row": 0, "col": 0}])
-    tgt = _logits(1 + ctx.vocab.size + MAX_SQUAD, [_SLOT0])
+    tgt = _logits(1 + ctx.vocab.size + len(ctx.squad_names), [_SLOT0])
     cell = _logits(_N_CELLS, [0])
     d = _logits(len(DIRECTIONS), [0])
     # retreat 0.5 vs deploy 0.0：margin 0.5 < 默认 1.0（词表目标关掉，否则
@@ -348,10 +363,19 @@ def test_retreat_logit_margin_gate():
     act = decode_action(tl, tgt, cell, d, ctx, bs, cfg)
     # retreat 被余量闸门屏蔽 → 受限 argmax 回落到唯一合法的 skill（同一已部署干员）
     assert act == {"type": "Skill", "name": "玫兰莎"}, "余量不足的撤退未被屏蔽"
-    act2 = decode_action(tl, tgt, cell, d, ctx, bs, InferConfig(
-        retreat_min_logit_margin=0.0, allow_bullet_time=False,
-        allow_vocab_targets=False,
-    ))
+    act2 = decode_action(
+        tl,
+        tgt,
+        cell,
+        d,
+        ctx,
+        bs,
+        InferConfig(
+            retreat_min_logit_margin=0.0,
+            allow_bullet_time=False,
+            allow_vocab_targets=False,
+        ),
+    )
     assert act2 == {"type": "Retreat", "name": "玫兰莎"}
 
 
@@ -361,7 +385,8 @@ def test_retreat_min_interval_gate():
     bs = _bs(hand=[], deployed=[{"name": "玫兰莎", "row": 0, "col": 0}])
     heads = _four_heads(ctx, [TYPE_TO_IDX["retreat"]], [_SLOT0], [0], [0])
     cfg = InferConfig(
-        allow_bullet_time=False, allow_vocab_targets=False,
+        allow_bullet_time=False,
+        allow_vocab_targets=False,
         retreat_min_logit_margin=0.0,
     )
     history = [{"type": "Retreat", "name": "玫兰莎"}]
@@ -410,16 +435,15 @@ def test_encode_action_for_history_matches_training_layout():
         ctx,
     ) == (TYPE_TO_IDX["deploy"], _SLOT1, 7, DIR_TO_IDX["Right"])
     # 全局词表目标（非编队干员）走 index_of 段
-    assert encode_action_for_history(
-        {"type": "Deploy", "name": "支援装置", "location": [0, 0]}, ctx
-    )[1] == _VOCAB_DEV
+    assert (
+        encode_action_for_history({"type": "Deploy", "name": "支援装置", "location": [0, 0]}, ctx)[
+            1
+        ]
+        == _VOCAB_DEV
+    )
     # 未登录目标落 UNK；无 location 的 skill 落到 cell 0；缺省朝向落 None
-    t, tgt, cell, d = encode_action_for_history(
-        {"type": "Skill", "name": "不存在的人"}, ctx
-    )
-    assert (t, tgt, cell, d) == (
-        TYPE_TO_IDX["skill"], 0, 0, DIR_TO_IDX["None"]
-    )
+    t, tgt, cell, d = encode_action_for_history({"type": "Skill", "name": "不存在的人"}, ctx)
+    assert (t, tgt, cell, d) == (TYPE_TO_IDX["skill"], 0, 0, DIR_TO_IDX["None"])
 
 
 # ---------------------------------------------------------------- 5. greedy_step 冒烟（合成模型）
@@ -542,8 +566,7 @@ def test_real_checkpoint_first_record_smoke():
         "kills": 0,
         "total_kills": 10,
         "hand": [
-            {"name": nm, "cost": 1, "available": True, "cooling": False}
-            for nm in ctx.squad_names
+            {"name": nm, "cost": 1, "available": True, "cooling": False} for nm in ctx.squad_names
         ],
         "deployed": [],
     }

@@ -212,7 +212,9 @@ def test_alignment_skill_daemon_filtered_and_truncated() -> None:
     assert rec["state_feat"][1, 0] == pytest.approx(7.0 / 100.0)
     assert stats.n_skill_daemon == 1
     assert stats.n_episode_len_mismatch == 1
-    assert stats.n_actions_dropped_tail == 2
+    assert stats.n_unpaired_actions == 2
+    assert len(rec["unpaired_actions"]) == 2
+    assert stats.n_actions_dropped_tail == 0
     assert stats.n_extra_states_dropped == 0
 
 
@@ -229,7 +231,9 @@ def test_extra_battle_states_dropped() -> None:
     assert rec["state_feat"].shape == (1, STATE_DIM)
     assert rec["state_feat"][0, 0] == pytest.approx(1.0 / 100.0)
     assert stats.n_episode_len_mismatch == 1
-    assert stats.n_extra_states_dropped == 2
+    assert stats.n_unpaired_states == 2
+    assert len(rec["unpaired_states"]) == 2
+    assert stats.n_extra_states_dropped == 0
     assert stats.n_actions_dropped_tail == 0
 
 
@@ -353,13 +357,13 @@ def test_state_vector_dims() -> None:
     """state_vector 各维按 docstring 定义取值（kills clip、空手牌、步进）。"""
     v = state_vector(_bs(cost=50.0, kills=15.0, total_kills=10.0), t=0, total=4, n_squad_job=2)
     assert v.shape == (STATE_DIM,)
-    assert v[0] == pytest.approx(0.5)            # cost/100
-    assert v[1] == pytest.approx(1.0)            # kills_ratio clip 到 1
-    assert v[3] == pytest.approx(1.0 / 12.0)     # hand_size
-    assert v[6] == pytest.approx(11.0 / 30.0)    # mean_hand_cost
-    assert v[9] == pytest.approx(0.0)            # step=0/4
+    assert v[0] == pytest.approx(0.5)  # cost/100
+    assert v[1] == pytest.approx(1.0)  # kills_ratio clip 到 1
+    assert v[3] == pytest.approx(1.0 / 12.0)  # hand_size
+    assert v[6] == pytest.approx(11.0 / 30.0)  # mean_hand_cost
+    assert v[9] == pytest.approx(0.0)  # step=0/4
     assert v[10] == pytest.approx(11.0 / 100.0)  # remain_hand_cost
-    assert v[11] == 0.0                          # reserved
+    assert v[11] == 0.0  # reserved
 
     empty = state_vector({"costs": 0, "hand": [], "deployed": []}, t=3, total=4, n_squad_job=0)
     assert empty[6] == 0.0 and empty[8] == 0.0 and empty[9] == pytest.approx(0.75)
@@ -410,7 +414,7 @@ def test_collate_and_policy_v1_forward() -> None:
     out = forward_batch_v1(model, batch)
     b, t = batch["type"].shape
     assert out["type"].shape == (b, t, len(ACTION_TYPES))
-    assert out["target"].shape == (b, t, 1 + 1 + MAX_SQUAD)
+    assert out["target"].shape == (b, t, 1 + 1 + batch["squad_mask"].shape[1])
     assert out["dir"].shape == (b, t, len(DIRECTIONS))
     assert out["cell"].shape == (b, t, batch["cells"].shape[1])
 
@@ -439,17 +443,15 @@ broad sample                                   413     4    29     0    379     
 """
     import tempfile
 
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", suffix=".txt", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as f:
         f.write(content)
         path = Path(f.name)
     hits = parse_scan_blockers(path)
     path.unlink()
     assert hits == {
-        "job-22241-20261020-072148": "settle_lost",      # 同 job 多帧去重
+        "job-22241-20261020-072148": "settle_lost",  # 同 job 多帧去重
         "job-55778-20261020-072643": "prts_level_low",
-        "job-21097-20261011-180350": "settle_lost",      # broad sample 区段
+        "job-21097-20261011-180350": "settle_lost",  # broad sample 区段
         "job-99999-20260101-000000": "sync_updated",
     }
 
@@ -459,9 +461,7 @@ def _mk_episode_dir(root: Path, stage: str, name: str, meta: dict | None) -> Pat
     ed = root / stage / name
     ed.mkdir(parents=True)
     if meta is not None:
-        (ed / "episode.json").write_text(
-            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
-        )
+        (ed / "episode.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     return ed
 
 
@@ -579,7 +579,10 @@ def test_build_dataset_accepts_moved_bundles_with_local_job(tmp_path: Path) -> N
     meta["job_file"] = "job.json"
     (ep / "episode.json").write_text(json.dumps(meta), encoding="utf-8")
     _v, stats, n = build_dataset(
-        processed, root, out_path=tmp_path / "portable.npz", holdout_stages=set(),
+        processed,
+        root,
+        out_path=tmp_path / "portable.npz",
+        holdout_stages=set(),
     )
     assert n == 1 and stats.n_kept == 1 and stats.drop_bad_files == 0
 
@@ -595,7 +598,8 @@ def test_converted_control_state_indices_are_applied_before_encoding(tmp_path: P
     meta["conversion"] = {"paired_state_indices": [0, 2]}
     (ep / "episode.json").write_text(json.dumps(meta), encoding="utf-8")
     (ep / "battle_states.jsonl").write_text(
-        "\n".join(json.dumps(_bs(v)) for v in (10, 99, 20)) + "\n", encoding="utf-8",
+        "\n".join(json.dumps(_bs(v)) for v in (10, 99, 20)) + "\n",
+        encoding="utf-8",
     )
     output = tmp_path / "converted.npz"
     _v, _stats, n = build_dataset(processed, root, out_path=output, holdout_stages=set())
@@ -645,25 +649,24 @@ def test_build_dataset_delta_only_new(tmp_path: Path) -> None:
     _mk_real_episode(root, "main_99-01", "job-old1-20261020-000001", tmp_path)
     _mk_real_episode(root, "main_99-01", "job-old2-20261020-000002", tmp_path)
     base_npz = tmp_path / "base.npz"
-    _v, base_stats, base_n = build_dataset(
-        processed, root, out_path=base_npz, holdout_stages=set()
-    )
+    _v, base_stats, base_n = build_dataset(processed, root, out_path=base_npz, holdout_stages=set())
     assert (base_n, base_stats.n_kept) == (2, 2)
 
     # 后到 3 局（其中 1 局关卡在 stagefeat 查不到 → drop_no_stage，验证统计口径）
     _mk_real_episode(root, "main_99-01", "job-new1-20261021-000001", tmp_path)
     _mk_real_episode(root, "main_99-01", "job-new2-20261021-000002", tmp_path)
     _mk_real_episode(root, "main_99-01", "job-new3-20261021-000003", tmp_path)
-    bad = _mk_episode_dir(
-        root, "main_77-77", "job-nostage-20261021-000004", None
-    )
+    bad = _mk_episode_dir(root, "main_77-77", "job-nostage-20261021-000004", None)
     (bad / "battle_states.jsonl").write_text("{}\n", encoding="utf-8")
     bad_job = tmp_path / "job_bad.json"
     bad_job.write_text(json.dumps(_job([], opers=["能天使"])), encoding="utf-8")
     (bad / "episode.json").write_text(
         json.dumps(
-            {"episode_id": "job-nostage-20261021-000004", "stage_id": "main_77-77",
-             "job_file": str(bad_job)}
+            {
+                "episode_id": "job-nostage-20261021-000004",
+                "stage_id": "main_77-77",
+                "job_file": str(bad_job),
+            }
         ),
         encoding="utf-8",
     )
@@ -695,7 +698,10 @@ def test_build_dataset_delta_only_new(tmp_path: Path) -> None:
     assert np.array_equal(z["featvec"], zb["featvec"])
     # 再跑一遍同基底：没有新局则零增量（无 stage 的坏局不算 seen，每次都被重试并计数）
     _v2, _s2, delta2 = build_dataset_delta(
-        processed, root, base_npz=out_npz, out_path=tmp_path / "delta2.npz",
+        processed,
+        root,
+        base_npz=out_npz,
+        out_path=tmp_path / "delta2.npz",
         holdout_stages=set(),
     )
     assert delta2["n_new_records"] == 0 and delta2["n_seen_skipped"] == 5
@@ -752,8 +758,15 @@ def test_train_resume_from_ckpt(tmp_path: Path) -> None:
 
     ckpt = tmp_path / "old.pt"
     model0 = TrackAPolicyV1(
-        featvec_dim=2, vocab_size=vocab.size, max_squad=MAX_SQUAD, state_dim=STATE_DIM,
-        d_model=32, n_heads=4, n_layers=1, n_dec_layers=1, dropout=0.0,
+        featvec_dim=2,
+        vocab_size=vocab.size,
+        max_squad=MAX_SQUAD,
+        state_dim=STATE_DIM,
+        d_model=32,
+        n_heads=4,
+        n_layers=1,
+        n_dec_layers=1,
+        dropout=0.0,
     )
     torch.save({"state_dict": model0.state_dict()}, ckpt)
 

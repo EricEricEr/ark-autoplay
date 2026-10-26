@@ -51,6 +51,8 @@ def _cfg(**over: Any) -> LoopRunConfig:
         "no_state_timeout_ticks": 3,
         "max_model_actions": 64,
         "support_unit_usage": 0,
+        "gate_change_ticks": 2,
+        "freeze_ticks": 6,
     }
     base.update(over)
     return LoopRunConfig(**base)
@@ -244,9 +246,9 @@ def test_loop_happy_path_records_history_and_actions() -> None:
     policy = _FakePolicy([_DEPLOY, None])
     samples = [
         TickSample(_state(in_battle=True, costs=10)),  # 上游明确报战斗中 → 直接开闸
-        TickSample(_state(costs=11)),                  # 鲜活（签名变化，冻结计数清零）
+        TickSample(_state(costs=11)),  # 鲜活（签名变化，冻结计数清零）
         TickSample(_state(costs=11)),
-        TickSample(_state(costs=11)),                  # freeze_ticks=2 → 自然结束
+        TickSample(_state(costs=11)),  # freeze_ticks=2 → 自然结束
     ]
     stats = _loop(ch, policy, samples, _cfg(freeze_ticks=2))
     assert stats.terminal_cause == "out_of_battle"
@@ -327,23 +329,68 @@ def test_loop_chain_timeout_via_clock() -> None:
     policy = _FakePolicy([])
     clock = itertools.count(0, 5).__next__  # 每次调用 +5s（t0=0 由循环内部消费）
     stats = _loop(
-        ch, policy, itertools.repeat(TickSample(_state(in_battle=True))),
-        _cfg(chain_timeout_s=20.0), clock=clock,
+        ch,
+        policy,
+        itertools.repeat(TickSample(_state(in_battle=True))),
+        _cfg(chain_timeout_s=20.0),
+        clock=clock,
     )
     assert stats.terminal_cause == "timeout"
     # t0=0 之后时钟 5/10/15/20 各处理一拍，25 越界收尾：共 4 拍
     assert stats.heartbeats == 4
 
 
-def test_loop_channel_dead_on_heartbeat_reject() -> None:
+def test_loop_heartbeat_reject_does_not_abort_the_episode() -> None:
     ch = _FakeChannel()
     stats = _loop(
-        ch, _FakePolicy([]),
+        ch,
+        _FakePolicy([]),
         [TickSample(_state(in_battle=True), heartbeat_ok=False)],
     )
-    assert stats.terminal_cause == "channel_dead"
+    assert stats.terminal_cause == "stream_end"
     assert stats.heartbeats == 0
     assert stats.actions_sent == 0
+
+
+def test_full_episode_keeps_long_stable_periods_and_more_than_64_actions() -> None:
+    samples = [
+        TickSample(_state(in_battle=False), battle_active=True) for _ in range(80)
+    ]
+    samples.append(TickSample(None, battle_active=False, terminal_result="win"))
+    cfg = _cfg(
+        chain_timeout_s=0,
+        max_model_actions=0,
+        no_state_timeout_ticks=0,
+        gate_change_ticks=0,
+        freeze_ticks=0,
+    )
+    policy = _FakePolicy([dict(_DEPLOY) for _ in range(80)])
+    stats = _loop(
+        _FakeChannel(), policy, samples, cfg, clock=itertools.count(0, 100).__next__
+    )
+    assert stats.actions_sent == 80
+    assert stats.ticks == 80
+    assert stats.terminal_result == "win"
+    assert stats.terminal_cause == "out_of_battle"
+
+
+def test_full_episode_does_not_cut_off_after_40_missing_states() -> None:
+    samples = [TickSample(None) for _ in range(50)]
+    samples.append(TickSample(None, terminal_result="lost"))
+    stats = _loop(
+        _FakeChannel(),
+        _FakePolicy([]),
+        samples,
+        _cfg(
+            no_state_timeout_ticks=0,
+            chain_timeout_s=0,
+            max_model_actions=0,
+            freeze_ticks=0,
+            gate_change_ticks=0,
+        ),
+    )
+    assert stats.no_state_max_streak == 50
+    assert stats.terminal_result == "lost"
 
 
 def test_loop_action_reject_is_lost_not_dead() -> None:
@@ -388,7 +435,10 @@ def test_loop_on_tick_hook_runs_each_sample() -> None:
     seen: list[int] = []
     samples = [
         TickSample(_state(in_battle=True)),
-        TickSample(None), TickSample(None), TickSample(None), TickSample(None),
+        TickSample(None),
+        TickSample(None),
+        TickSample(None),
+        TickSample(None),
     ]
     battle_decision_loop(
         channel=ch,
@@ -432,13 +482,13 @@ def test_gate_change_breaks_frozen_then_reends() -> None:
     ch = _FakeChannel()
     policy = _FakePolicy([None, None, None, None])
     samples = [
-        TickSample(_state(costs=90, kills=5)),   # streak 0
-        TickSample(_state(costs=91, kills=5)),   # 变 → streak1
-        TickSample(_state(costs=92, kills=5)),   # 变 → 开闸
-        TickSample(_state(costs=92, kills=5)),   # 冻结 1
-        TickSample(_state(costs=92, kills=6)),   # 击杀步进 → 冻结清零
-        TickSample(_state(costs=92, kills=6)),   # 冻结 1
-        TickSample(_state(costs=92, kills=6)),   # 冻结 2 → 结束
+        TickSample(_state(costs=90, kills=5)),  # streak 0
+        TickSample(_state(costs=91, kills=5)),  # 变 → streak1
+        TickSample(_state(costs=92, kills=5)),  # 变 → 开闸
+        TickSample(_state(costs=92, kills=5)),  # 冻结 1
+        TickSample(_state(costs=92, kills=6)),  # 击杀步进 → 冻结清零
+        TickSample(_state(costs=92, kills=6)),  # 冻结 1
+        TickSample(_state(costs=92, kills=6)),  # 冻结 2 → 结束
     ]
     stats = _loop(ch, policy, samples, _cfg(gate_change_ticks=2, freeze_ticks=2))
     assert stats.terminal_cause == "out_of_battle"
@@ -451,7 +501,8 @@ def test_gate_battle_never_started_on_timeout() -> None:
     policy = _FakePolicy([_DEPLOY])
     clock = itertools.count(0, 10).__next__
     stats = _loop(
-        ch, policy,
+        ch,
+        policy,
         itertools.repeat(TickSample(_state(costs=14, kills=0, total_kills=23))),
         _cfg(no_state_timeout_ticks=99, chain_timeout_s=30.0, gate_change_ticks=2),
         clock=clock,
@@ -477,7 +528,8 @@ def test_loop_timeout_after_battle_started_still_timeout() -> None:
     ch = _FakeChannel()
     clock = itertools.count(0, 10).__next__
     stats = _loop(
-        ch, _FakePolicy([]),
+        ch,
+        _FakePolicy([]),
         itertools.repeat(TickSample(_state(in_battle=True, costs=99))),
         _cfg(chain_timeout_s=30.0),
         clock=clock,
@@ -703,7 +755,8 @@ def test_load_loop_config_roundtrip(tmp_path: Path) -> None:
 
 
 def test_shipping_milestone_config_loads(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """仓内 configs/loop_milestone_v1.json 必须可被装载器吃进去（不读路径内容）。"""
     monkeypatch.setenv("ARK_ML_ROOT", str(tmp_path))

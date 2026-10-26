@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image
 
 from bridge.nav_maa import navigate_only
-from bridge.navigator import briefing_blue_ok
+from bridge.navigator import briefing_blue_ok, briefing_button_ok
 
 REGION = [1660, 955, 200, 90]  # 沿用 configs/nav_main.yaml brief_blue_check
 TH = 0.25
@@ -122,3 +122,23 @@ def test_navigate_only_screencap_failure_is_false(monkeypatch) -> None:
     monkeypatch.delenv("ARK_NAV_SKIP", raising=False)
     drv = _BrokenDriver([_completed()], _frame(blue=True))
     assert navigate_only(drv, "1-11", endpoint_cfg=CFG) is False
+
+
+def test_dark_red_start_button_is_valid_for_hard_mode_only() -> None:
+    frame = _frame(blue=True, fill=(95, 26, 17))
+    assert briefing_button_ok(frame, REGION, TH, hard_mode=True)
+    assert briefing_button_ok(Image.fromarray(frame), REGION, TH, hard_mode=True)
+    assert not briefing_button_ok(frame, REGION, TH)
+    assert not briefing_button_ok(_frame(blue=True), REGION, TH, hard_mode=True)
+
+
+def test_hard_mode_rejects_invalid_or_non_briefing_frames() -> None:
+    assert not briefing_button_ok(_frame(blue=False), REGION, TH, hard_mode=True)
+    assert not briefing_button_ok(np.zeros((10, 10)), REGION, TH, hard_mode=True)
+    assert not briefing_button_ok(np.zeros((10, 10, 3)), REGION, TH, hard_mode=True)
+
+
+def test_hard_navigation_accepts_dark_red_button(monkeypatch) -> None:
+    monkeypatch.delenv("ARK_NAV_SKIP", raising=False)
+    driver = _FakeDriver([_completed()], _frame(blue=True, fill=(95, 26, 17)))
+    assert navigate_only(driver, "11-2-Hard", endpoint_cfg=CFG)

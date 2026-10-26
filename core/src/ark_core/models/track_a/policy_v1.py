@@ -23,7 +23,7 @@ import torch
 from torch import Tensor, nn
 
 from ...protocol.action import ACTION_TYPES, DIRECTIONS, GRID_CHANNELS
-from .policy import EntityEncoder
+from .policy import EntityEncoder, dynamic_target_logits, history_target_embedding
 
 
 class TrackAPolicyV1(nn.Module):
@@ -91,6 +91,8 @@ class TrackAPolicyV1(nn.Module):
 
         self.head_type = nn.Linear(d_model, self.n_types)
         self.head_target = nn.Linear(d_model, self.n_targets)
+        self.squad_query = nn.Linear(d_model, d_model) if not max_squad else None
+        self.squad_key = nn.Linear(d_model, d_model) if not max_squad else None
         self.head_dir = nn.Linear(d_model, self.n_dirs)
         self.cell_query = nn.Linear(d_model, d_model)
         self.cell_key = nn.Linear(d_model, d_model)
@@ -115,14 +117,20 @@ class TrackAPolicyV1(nn.Module):
         ``hist_state``: float32 [B, T, state_dim]，第 t 位 = 第 t 个动作前的状态。
         """
         squad_tok = self.op_proj(squad_feat)
-        enc, n_cells, _n_spawns, _n_squad = self.encoder(
+        enc, n_cells, n_spawns, _n_squad = self.encoder(
             cells, cell_pos, cell_mask, spawns, spawn_mask, squad_tok, squad_mask
         )
         t = hist_type.shape[1]
 
         h = (
             self.hist_type(hist_type)
-            + self.hist_target(hist_target)
+            + history_target_embedding(
+                hist_target,
+                self.hist_target,
+                squad_tok,
+                self.vocab_size,
+                dynamic=not self.max_squad,
+            )
             + self.hist_dir(hist_dir)
             + self.hist_cell(hist_cell)
             + self.state_proj(hist_state)
@@ -137,6 +145,15 @@ class TrackAPolicyV1(nn.Module):
         cell_logits = torch.einsum("btd,bsd->bts", q, k) / (self.d_model**0.5)
         cell_logits = cell_logits.masked_fill(~cell_mask.unsqueeze(1), float("-inf"))
         target_logits = self.head_target(dec)
+        if self.squad_query is not None and self.squad_key is not None:
+            target_logits = dynamic_target_logits(
+                dec,
+                target_logits,
+                enc[:, n_cells + n_spawns :, :],
+                squad_mask,
+                self.squad_query,
+                self.squad_key,
+            )
         squad_start = 1 + self.vocab_size
         if self.max_squad:
             slot_valid = squad_mask[:, : self.max_squad]

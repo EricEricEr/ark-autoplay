@@ -84,10 +84,8 @@ def _run_stages(resolved: ResolvedSources) -> dict[str, Any]:
 
 
 def _run_stagefeat(cfg: DataConfig, resolved: ResolvedSources) -> dict[str, Any]:
-    include_variants = bool(cfg.raw.get("stagefeat", {}).get("include_variants", False))
-    res = build_stagefeat(
-        cfg, resolved, resolved.out_dir, include_variants=include_variants
-    )
+    include_variants = bool(cfg.raw.get("stagefeat", {}).get("include_variants", True))
+    res = build_stagefeat(cfg, resolved, resolved.out_dir, include_variants=include_variants)
     st = res.stats
     return {
         "stagefeat_version": STAGEFEAT_VERSION,
@@ -116,7 +114,7 @@ def _run_episodes(cfg: DataConfig, resolved: ResolvedSources) -> dict[str, Any]:
         data_version=cfg.data_version,
     )
     out = out_path(resolved, "episodes_jsonl")
-    drop = bool(cfg.episodes.get("drop_when_all_actions_skipped", True))
+    drop = bool(cfg.episodes.get("drop_when_all_actions_skipped", False))
     res = convert_copilot(resolved.require("copilot_jsonl"), ctx, out, drop_when_all_skipped=drop)
     topk = int(cfg.episodes.get("unknown_names_topk_in_report", 100))
     return {

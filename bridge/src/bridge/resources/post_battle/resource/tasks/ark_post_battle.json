@@ -1,0 +1,111 @@
+{
+    "ArkBattle@StoryEntry": {
+        "algorithm": "JustReturn",
+        "next": ["ArkBattle@StoryConfirmText", "ArkBattle@SkipStory", "Stop"]
+    },
+    "ArkBattle@SkipStory": {
+        "baseTask": "SkipThePreBattlePlot",
+        "template": "SkipThePreBattlePlot.png",
+        "postDelay": 500,
+        "next": ["ArkBattle@StoryConfirmText", "Stop"]
+    },
+    "ArkBattle@StoryConfirmText": {
+        "algorithm": "OcrDetect",
+        "text": ["是否跳过", "跳过当前", "跳过剧情"],
+        "roi": [240, 180, 800, 360],
+        "action": "DoNothing",
+        "next": ["ArkBattle@StoryConfirmButton", "Stop"]
+    },
+    "ArkBattle@StoryConfirmButton": {
+        "baseTask": "SkipThePreBattlePlotConfirm",
+        "template": "SkipThePreBattlePlotConfirm.png",
+        "postDelay": 1000,
+        "next": ["Stop"]
+    },
+    "ArkPostBattle@Entry": {
+        "algorithm": "JustReturn",
+        "maxTimes": 24,
+        "exceededNext": ["Stop"],
+        "next": [
+            "ArkPostBattle@Home",
+            "ArkPostBattle@StoryConfirmText",
+            "ArkPostBattle@SkipStory",
+            "ArkPostBattle@Result",
+            "ArkPostBattle@Return",
+            "Stop"
+        ]
+    },
+    "ArkPostBattle@Home": {
+        "baseTask": "StartUp",
+        "template": "SwitchTheme@ToggleSettingsMenu.png",
+        "action": "DoNothing",
+        "maxTimes": 24,
+        "exceededNext": ["Stop"],
+        "postDelay": 800,
+        "next": ["ArkPostBattle@HomeStable", "ArkPostBattle@Entry"]
+    },
+    "ArkPostBattle@HomeStable": {
+        "baseTask": "StartUp",
+        "template": "SwitchTheme@ToggleSettingsMenu.png",
+        "action": "DoNothing",
+        "maxTimes": 24,
+        "exceededNext": ["Stop"],
+        "postDelay": 200,
+        "next": []
+    },
+    "ArkPostBattle@SkipStory": {
+        "baseTask": "SkipThePreBattlePlot",
+        "template": "SkipThePreBattlePlot.png",
+        "maxTimes": 12,
+        "exceededNext": ["Stop"],
+        "postDelay": 300,
+        "next": ["ArkPostBattle@StoryConfirmText", "ArkPostBattle@Entry"]
+    },
+    "ArkPostBattle@StoryConfirmText": {
+        "algorithm": "OcrDetect",
+        "text": ["是否跳过", "跳过当前", "跳过剧情"],
+        "roi": [240, 180, 800, 360],
+        "action": "DoNothing",
+        "maxTimes": 12,
+        "exceededNext": ["Stop"],
+        "next": ["ArkPostBattle@StoryConfirmButton"]
+    },
+    "ArkPostBattle@StoryConfirmButton": {
+        "baseTask": "SkipThePreBattlePlotConfirm",
+        "template": "SkipThePreBattlePlotConfirm.png",
+        "maxTimes": 12,
+        "exceededNext": ["Stop"],
+        "postDelay": 1500,
+        "next": ["ArkPostBattle@Entry"]
+    },
+    "ArkPostBattle@Result": {
+        "algorithm": "MatchTemplate",
+        "template": ["StageDrops-Stars-2.png", "StageDrops-Stars-3.png", "StageDrops-Stars-Adverse.png"],
+        "templThreshold": [0.9, 0.9, 0.9],
+        "roi": [40, 270, 320, 130],
+        "action": "DoNothing",
+        "maxTimes": 12,
+        "exceededNext": ["Stop"],
+        "next": ["ArkPostBattle@ResultContinue"]
+    },
+    "ArkPostBattle@ResultContinue": {
+        "baseTask": "EndOfAction",
+        "template": "EndOfAction.png",
+        "action": "ClickRect",
+        "specificRect": [1106, 666, 1, 1],
+        "maxTimes": 12,
+        "exceededNext": ["Stop"],
+        "postDelay": 800,
+        "next": ["ArkPostBattle@Entry"]
+    },
+    "ArkPostBattle@Return": {
+        "baseTask": "ReturnButton",
+        "template": ["Return.png", "Return-White.png"],
+        "action": "ClickSelf",
+        "maxTimes": 8,
+        "exceededNext": ["Stop"],
+        "onErrorNext": ["Stop"],
+        "postDelay": 800,
+        "next": ["ArkPostBattle@Entry"]
+    }
+}

@@ -18,14 +18,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from bridge.copilot_schema import ACTION_EVENT
+
 VERSION = "collector_state_action/1.0"
-ACTION_EVENT = {
-    "Deploy": "Deploy",
-    "Skill": "UseSkill",
-    "Retreat": "Retreat",
-    "SpeedUp": "SwitchSpeed",
-    "BulletTime": "BulletTime",
-}
 
 
 class Rejected(ValueError):
@@ -106,7 +101,9 @@ def paired_samples(
     if unknown:
         raise Rejected("unsupported_job_action_type")
     kept_positions = [
-        i for i, a in enumerate(raw_actions) if a.get("type") in ACTION_EVENT
+        i
+        for i, a in enumerate(raw_actions)
+        if a.get("type") in ACTION_EVENT and a.get("type") != "SkillDaemon"
     ]
     actions = [raw_actions[i] for i in kept_positions]
     raw_observed = [

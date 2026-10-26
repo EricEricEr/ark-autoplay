@@ -287,6 +287,17 @@ class ReplayController:
         return path
 
     def _run_one(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """每局独立持有截图线程；异常或人工中断时也回收，避免串入下一局。"""
+        self._episode_logger: StateLogger | None = None
+        self._partial_run_dir: Path | None = None
+        try:
+            return self._run_one_body(entry)
+        finally:
+            if self._episode_logger is not None:
+                self._episode_logger.stop()
+                self._episode_logger = None
+
+    def _run_one_body(self, entry: dict[str, Any]) -> dict[str, Any]:
         """重放一个作业，返回结果摘要。"""
         src = entry["source"]
         stage_code = entry["maa_job"]["stage_name"]
@@ -401,6 +412,7 @@ class ReplayController:
         print(f"[job {job_id}] 已导航到 {stage_code} 准备界面（nav_only）", flush=True)
 
         run_dir = self._writer.begin(stage_id, storage_key)
+        self._partial_run_dir = run_dir
         job_file = self._write_maa_job(entry)
         shutil.copyfile(job_file, run_dir / "job.json")
         trace = LiveTrace(
@@ -427,6 +439,7 @@ class ReplayController:
                 rec("Shot", tag=tag, file=rel)
 
         logger = StateLogger(self._driver, run_dir, on_shot=on_shot)
+        self._episode_logger = logger
         logger.start()
         logger.snap("briefing")
         # 判负证据窗口起点（Copilot 下发前）：窗口内哨兵消解的 settle_lost
@@ -745,17 +758,51 @@ class ReplayController:
         if not jobs:
             print("[factory] 无待跑作业")
             return []
-        if not self._driver.connect():
-            raise RuntimeError("MAA 连接失败")
+        debug = self._work / "debug"
+        debug.mkdir(parents=True, exist_ok=True)
+        out = debug / f"factory_summary_{time.time_ns()}.json"
+        journal = out.with_suffix(".jsonl")
         summaries = []
         try:
+            if not self._driver.connect():
+                raise RuntimeError("MAA 连接失败")
             for entry in jobs:
-                summaries.append(self._run_one(entry))
+                try:
+                    summary = self._run_one(entry)
+                except Exception as exc:  # 单局异常记账后继续，人工中断仍向外传播。
+                    source = entry["source"]
+                    summary = {
+                        "job_id": source["job_id"],
+                        "execution_key": execution_key(source),
+                        "stage_code": entry["maa_job"]["stage_name"],
+                        "ok": False,
+                        "fail_stage": "exception",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                    partial = getattr(self, "_partial_run_dir", None)
+                    if partial is not None:
+                        summary["inprogress_bundle"] = str(partial)
+                    try:
+                        self._driver.stop()
+                        wait_idle(self._driver, timeout_s=20.0)
+                    except Exception as recovery_error:
+                        summary["recovery_error"] = (
+                            f"{type(recovery_error).__name__}: {recovery_error}"
+                        )
+                    print(
+                        f"[factory] 作业异常，已记录并继续: {summary['error']}",
+                        flush=True,
+                    )
+                summaries.append(summary)
+                # 每份即时留存摘要，后续局异常或中断不应抹掉前面已完成的记录。
+                with journal.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(summary, ensure_ascii=False) + "\n")
         finally:
-            self._driver.close()
-        out = self._work / "debug" / f"factory_summary_{int(time.time())}.json"
-        with open(out, "w", encoding="utf-8") as f:
-            json.dump(summaries, f, ensure_ascii=False, indent=1)
+            try:
+                self._driver.close()
+            finally:
+                with out.open("w", encoding="utf-8") as stream:
+                    json.dump(summaries, stream, ensure_ascii=False, indent=1)
         print(f"[factory] 完成 {len(summaries)} 局 -> {out}")
         return summaries
 

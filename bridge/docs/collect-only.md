@@ -83,7 +83,15 @@ uv run python -u -m bridge.replay_controller --jobs "$dataRoot/configs/queue.jso
 uv run python -u -m bridge.replay_controller --jobs "$dataRoot/configs/queue.json" --instance configs/instances/collector.local.yaml --nav configs/nav_main.yaml --work $dataRoot --skip-done
 ```
 
-脚本运行时保持终端/进程存活。连续出现回主页 StartUp 失败时停止本批、保留日志与画面再排查，不要把整批失败当成完成。`--skip-done` 当前以 `episode.json` 存在为依据，**不判断胜负或数据质量**；失败/未知局由维护者验收后制定补跑队列，不能盲目跳过。
+脚本运行时保持终端/进程存活。单份导航、编队或执行失败，以及单局执行中抛出的异常，会记账后继续下一份；连续失败不会自动停止整个队列。摘要逐份写入`debug/factory_summary_*.jsonl`，正常结束或人工中断时另写汇总JSON。连接失败、写盘失败等进程级故障仍需人工恢复，不能把退出当成整批完成。`--skip-done` 当前以`episode.json`存在为依据，**不判断胜负或数据质量**；失败/未知局由维护者验收后制定补跑队列，不能盲目跳过。
+
+### 异常恢复的实际边界
+
+当前标准入口已有已知阻断画面处理、剧情/结算推进、回主页重试、单局异常隔离和增量事件/状态落盘。单张截图失败会记账并继续采样，**不代表ADB已重连**。异常退出时会回收该局截图线程，避免下一局画面继续写进上一局。
+
+尚无通用的ADB掉线重连、模拟器/游戏崩溃后自动重启、采集进程异常退出后自动拉起，以及断电后自动恢复流程。磁盘写满、更新维护、登录失效和未识别弹窗也没有完整自动处理闭环。进程被强杀或机器掉电时，当前局仍可能不完整；已写出的旁路数据保留，不能据此认定该局完成或胜利。
+
+以上是已实现能力的说明，不是“所有意外都会自动恢复”的保证。`--skip-done`只处理已有完成文件的跳过，失败补跑仍需按质量报告另行安排。
 
 队列筛选的已确认口径为 `gen_queue --max-missing 1 --require-req`；当前导航还需 `--require-fight`，账号进度可通过 `--account-progress` 限制。队列不是通关承诺：助战列表仍须真的有目标、技能可用，练度未知项仍需复核。`--require-ops-known` 会额外要求持有，不适合直接用于需要借战的队列。
 

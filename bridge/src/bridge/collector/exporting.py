@@ -52,7 +52,7 @@ def redact(value: Any, data_root: Path, path: tuple[str, ...] = ()) -> Any:
             except ValueError:
                 return "<本机路径>"
         value = re.sub(
-            r"[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^\r\n\"<>]+",
+            r"[A-Za-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+[^\r\n\"<>]+",
             "<本机路径>",
             value,
         )
@@ -66,6 +66,8 @@ def export_data(
     *,
     include_images: bool = False,
     redact_personal: bool = True,
+    diagnostics_home: Path | None = None,
+    diagnostics_only: bool = False,
 ) -> dict[str, int]:
     """创建新ZIP，原件不删改；分享范围由玩家在导出界面明确选择。"""
     if target.exists():
@@ -85,15 +87,19 @@ def export_data(
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         with zipfile.ZipFile(target, "x", compression=zipfile.ZIP_DEFLATED) as archive:
-            candidates = [
-                path
-                for name in allowed
-                for path in (root / name).rglob("*")
-                if path.is_file()
-            ]
+            candidates = (
+                []
+                if diagnostics_only
+                else [
+                    path
+                    for name in allowed
+                    for path in (root / name).rglob("*")
+                    if path.is_file()
+                ]
+            )
             candidates += (
                 [root / "collection_results.jsonl"]
-                if (root / "collection_results.jsonl").exists()
+                if (root / "collection_results.jsonl").exists() and not diagnostics_only
                 else []
             )
             for source in sorted(candidates):
@@ -154,6 +160,36 @@ def export_data(
                 manifest[relative.as_posix()] = hashlib.sha256(payload).hexdigest()
                 counts["files"] += 1
                 counts["images"] += int(image)
+            if diagnostics_home is not None:
+                for source in sorted((root / "runs").rglob("*")):
+                    if not source.is_file() or not source.resolve().is_relative_to(
+                        root
+                    ):
+                        continue
+                    allowed = (
+                        source.suffix == ".log"
+                        or source.name.endswith(
+                            (".result.json", ".fatal.json", ".notice.json")
+                        )
+                        or source.name in ("status.json", "recovery_events.jsonl")
+                    )
+                    if allowed:
+                        relative = "diagnostics/" + source.relative_to(root).as_posix()
+                        payload = redact_text(
+                            source.read_text(encoding="utf-8", errors="replace"), root
+                        ).encode()
+                        archive.writestr(relative, payload)
+                        manifest[relative] = hashlib.sha256(payload).hexdigest()
+                        counts["files"] += 1
+                for source in (diagnostics_home / "app_errors.log",):
+                    if source.is_file():
+                        relative = "diagnostics/" + source.name
+                        payload = redact_text(
+                            source.read_text(encoding="utf-8", errors="replace"), root
+                        ).encode()
+                        archive.writestr(relative, payload)
+                        manifest[relative] = hashlib.sha256(payload).hexdigest()
+                        counts["files"] += 1
             for relative, document in deferred_manifests:
                 prefix = relative.parent.as_posix().rstrip(".")
                 prefix = prefix + "/" if prefix else ""
@@ -193,3 +229,20 @@ def export_data(
         if target.exists():
             target.unlink()
         raise
+
+
+def redact_text(text: str, root: Path) -> str:
+    """诊断全文保留，移除凭据字段、账号标识和个人目录，不导出配置原文。"""
+    text = text.replace(str(root), "<数据目录>").replace(root.as_posix(), "<数据目录>")
+    text = re.sub(
+        r"[A-Za-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+[^\r\n\"<>]+",
+        "<本机路径>",
+        text,
+    )
+    text = re.sub(r"(?i)(?:Bearer\s+)[\w.\-]+", "Bearer <已移除>", text)
+    text = re.sub(
+        r"""(?ix)(["']?(?:uid|userid|nickname|password|cred|token|access_token|refresh_token|cookie|authorization)["']?\s*[:=]\s*)(["'][^"'\r\n]*["']|[^\s,;}\r\n]+)""",
+        r"\1<已移除>",
+        text,
+    )
+    return text

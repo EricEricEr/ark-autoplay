@@ -13,6 +13,8 @@ from PIL import Image
 from bridge.blocker_watchdog import BLOCKER_SYNC_UPDATED, BlockerSentry
 from bridge.resource_policy import originite_allowed
 
+from .resilience import NeedsUser
+
 
 def locate_template(
     frame: np.ndarray, template: np.ndarray, roi: tuple[int, int, int, int]
@@ -93,7 +95,9 @@ class CollectorSentry(BlockerSentry):
             self._on_message(
                 "游戏可能需要处理更新或同步，请在模拟器内确认；软件不会自动同意未知弹窗"
             )
-            return None
+            raise NeedsUser(
+                "请处理游戏更新或同步提示，并回到游戏主页后点击‘已处理，检查并继续’"
+            )
         return kind
 
     def poll(self) -> str | None:

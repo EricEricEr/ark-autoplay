@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import site
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from .discovery import check_runtime
+from .resilience import account_key, load_settings, reconcile, writable_probe
 from .storage import (
-    Settings,
     app_home,
     command_for,
     now,
@@ -49,11 +51,7 @@ class CollectorService:
         self.home = home or app_home()
         self.home.mkdir(parents=True, exist_ok=True)
         self.settings_file = self.home / "settings.local.json"
-        self.settings = (
-            Settings.load(self.settings_file)
-            if self.settings_file.exists()
-            else Settings()
-        )
+        self.settings, self.startup_notice = load_settings(self.settings_file)
         if not self.settings.data_dir:
             self.settings.data_dir = str(self.home / "data")
         if not self.settings.account_binding:
@@ -125,8 +123,14 @@ class CollectorService:
                 "alive": False,
             }
         run_dir = Path(self.settings.last_run_dir)
-        state = read_json(run_dir / "status.json", {}) or {}
-        spec = read_json(run_dir / "run.json", {}) or {}
+        try:
+            spec = read_json(run_dir / "run.json", {}) or {}
+            state = (
+                read_json(Path(spec.get("live_file", run_dir / "status.json")), {})
+                or {}
+            )
+        except (OSError, ValueError, UnicodeError):
+            spec, state = {}, {}
         if state and state.get("run_token") != spec.get("run_token"):
             return {
                 "status": "error",
@@ -145,7 +149,26 @@ class CollectorService:
                 if alive
                 else "上次任务未正常结束，可以继续未完成任务",
             }
-        if state.get("status") not in ("finished", "stopped", "error") and not alive:
+        if alive and time.time() - state.get("heartbeat_epoch", time.time()) > 30:
+            return {
+                **state,
+                "status": "unresponsive",
+                "alive": True,
+                "message": "采集监督器失去响应。可点‘停止无响应任务’，"
+                "保留数据后重新检查。",
+            }
+        if (
+            state.get("status")
+            not in (
+                "finished",
+                "stopped",
+                "error",
+                "storage_error",
+                "conversion_error",
+                "needs_user",
+            )
+            and not alive
+        ):
             return {
                 **state,
                 "status": "interrupted",
@@ -157,20 +180,23 @@ class CollectorService:
     def is_running(self) -> bool:
         """暂停、重连期间也占用当前采集器。"""
         state = self.status()
-        return bool(state.get("alive")) and state.get("status") not in (
-            "finished",
-            "stopped",
-            "error",
-        )
+        return bool(state.get("alive"))
 
-    def start(self, *, retry_failed: bool = False, restart_all: bool = False) -> Path:
+    def start(
+        self,
+        *,
+        retry_failed: bool = False,
+        restart_all: bool = False,
+        conversion_only: bool = False,
+    ) -> Path:
         """开始新一轮或续跑；运行版本无需Python环境或命令窗口。"""
         if self.is_running():
             raise RuntimeError("采集已经在进行")
-        self.task_summary()
-        if not self.settings.queue_file:
+        if not conversion_only:
+            self.task_summary()
+        if not conversion_only and not self.settings.queue_file:
             raise ValueError("请先点击导入采集任务")
-        if not self.settings.demo:
+        if not self.settings.demo and not conversion_only:
             if not self.settings.accepted_notice:
                 raise ValueError("请先阅读并确认采集说明")
             if not self.settings.adb_path or not self.settings.maa_dir:
@@ -184,6 +210,8 @@ class CollectorService:
                 raise ValueError("补给选项尚未得到账号持有者确认")
         data_root = Path(self.settings.data_dir)
         data_root.mkdir(parents=True, exist_ok=True)
+        writable_probe(data_root)
+        reconcile(data_root, account_key(self.settings), demo=self.settings.demo)
         run_dir = data_root / "runs" / ("r-" + uuid.uuid4().hex[:16])
         run_dir.mkdir(parents=True)
         token = uuid.uuid4().hex
@@ -196,6 +224,9 @@ class CollectorService:
                 "run_dir": str(run_dir),
                 "retry_failed": retry_failed,
                 "restart_all": restart_all,
+                "conversion_only": conversion_only,
+                "live_file": str(self.home / "live" / f"{token}.json"),
+                "profile_home": str(self.home),
             },
         )
         write_json(run_dir / "control.json", {"command": "continue", "at": now()})
@@ -215,11 +246,54 @@ class CollectorService:
 
     def send(self, command: str) -> None:
         """界面按钮发送显式控制，不按连续失败次数停止队列。"""
-        if command not in ("pause_after", "continue", "stop_after", "stop_now"):
+        if command not in (
+            "pause_after",
+            "continue",
+            "stop_after",
+            "stop_now",
+            "resume_checked",
+        ):
             raise ValueError("未知控制操作")
         if not self.settings.last_run_dir:
             return
         write_json(
             Path(self.settings.last_run_dir) / "control.json",
-            {"command": command, "at": now()},
+            {
+                "command": command,
+                "at": now(),
+                "challenge": self.status().get("challenge"),
+            },
         )
+
+    def recover(self) -> None:
+        """界面一键检查磁盘、核对记账并恢复，所有操作仍在本地。"""
+        writable_probe(Path(self.settings.data_dir))
+        if self.is_running():
+            self.send("resume_checked")
+        else:
+            if self.status().get("status") == "needs_user" and not self.settings.demo:
+                from . import worker
+                from .supervisor import home_visible
+
+                worker.prepare_device(self.settings, lambda **_: None, lambda: False)
+                if not home_visible(self.settings, worker):
+                    raise RuntimeError("尚未识别到游戏主页，请处理登录或弹窗后重试")
+            self.start()
+
+    def stop_unresponsive(self) -> None:
+        """只终止身份已核对的本档案监督进程，其作业组负责清理子进程。"""
+        from .worker import run_command
+
+        state = self.status()
+        pid = int(state.get("pid") or 0)
+        if not pid or not state.get("alive"):
+            return
+        if (
+            not state.get("process_birth")
+            or process_birth(pid) != state["process_birth"]
+        ):
+            raise RuntimeError("进程身份已变化，请重新打开软件核对")
+        run_command(["taskkill", "/PID", str(pid), "/T", "/F"])
+        if self.process:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self.process.wait(timeout=10)

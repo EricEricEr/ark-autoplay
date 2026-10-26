@@ -1,6 +1,7 @@
 """授权补给及人工确认边界回归，全部使用合成画面和假设备。"""
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from bridge import blocker_watchdog
@@ -80,8 +81,10 @@ def test_unknown_sync_dialog_is_not_dismissed_as_story_freeze(tmp_path, monkeypa
         "detect_blocker",
         lambda image: blocker_watchdog.BLOCKER_SYNC_UPDATED,
     )
-    sentry.poll()
+    with pytest.raises(recovery.NeedsUser):
+        sentry.poll()
     clock[0] = 30.0
-    sentry.poll()
+    with pytest.raises(recovery.NeedsUser):
+        sentry.poll()
     assert not device.taps
     assert any("同步" in message for message in messages)

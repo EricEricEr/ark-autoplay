@@ -23,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ui-test", type=Path)
     args = parser.parse_args(argv)
     if args.self_test:
+        import ctypes.util
         import json
         import tkinter
 
@@ -45,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.loads(path.read_text(encoding="utf-8"))
         checks["node_runtime"] = bool(find_installations(Settings())["node_path"])
         checks["tk_runtime"] = bool(tkinter.Tcl().eval("info patchlevel"))
+        checks["native_library_loader"] = callable(ctypes.util.find_library)
         write_json(args.self_test, {"passed": all(checks.values()), "checks": checks})
         return 0 if all(checks.values()) else 2
     if args.convert:

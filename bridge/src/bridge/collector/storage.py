@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import hashlib
 import json
@@ -39,12 +40,15 @@ def write_json(path: Path, value: Any) -> None:
         json.dump(value, stream, ensure_ascii=False, indent=2)
         stream.flush()
         os.fsync(stream.fileno())
+    retry_until = time.monotonic() + 5
     while True:
         try:
             temporary.replace(path)
             return
         except PermissionError as error:
             if getattr(error, "winerror", None) not in (5, 32, 33):
+                raise
+            if time.monotonic() >= retry_until:
                 raise
             if (
                 path.exists()
@@ -139,6 +143,10 @@ class Settings:
 
     def save(self, path: Path) -> None:
         """本地保存选项，不向外部服务上传。"""
+        if path.exists():
+            with contextlib.suppress(ValueError, TypeError, UnicodeError):
+                previous = Settings.load(path)
+                write_json(path.with_suffix(".backup.json"), asdict(previous))
         write_json(path, asdict(self))
 
     def bind_account(self, identifier: str) -> None:

@@ -88,6 +88,7 @@ class StateLogger:
         on_shot: Callable[[str, str], None] | None = None,
         on_black_frame: Callable[[str, int], None] | None = None,
         interval_s: float = 1.5,
+        on_storage_error: Callable[[OSError], None] | None = None,
     ) -> None:
         """初始化；``on_shot(tag, relpath)`` 在每帧落盘后触发。
 
@@ -100,6 +101,7 @@ class StateLogger:
         self._on_shot = on_shot
         self._on_black_frame = on_black_frame
         self._interval = interval_s
+        self._on_storage_error = on_storage_error
         self._active = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -165,7 +167,12 @@ class StateLogger:
                 if self._on_black_frame is not None:
                     self._on_black_frame(tag, dropped)
             else:
-                img.save(self._shots / name)
+                try:
+                    img.save(self._shots / name)
+                except OSError as error:
+                    if self._on_storage_error is not None:
+                        self._on_storage_error(error)
+                    raise
                 out = rel
         except Exception as exc:  # noqa: BLE001  # 截图失败不打断作战
             out = f"SNAP_FAIL:{exc}"

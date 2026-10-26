@@ -85,7 +85,15 @@ class CollectorApp(tk.Tk):
         self.refresh_tasks()
         self.show_page("采集面板")
         self.protocol("WM_DELETE_WINDOW", self.close_app)
+        self.report_callback_exception = self.callback_error
         self.after(150, self.poll)
+        if self.service.startup_notice:
+            self.after(
+                500,
+                lambda: messagebox.showinfo(
+                    "已恢复设置", self.service.startup_notice, parent=self
+                ),
+            )
         if not demo:
             self.after(400, lambda: self.auto_detect(silent=True))
         else:
@@ -387,6 +395,10 @@ class CollectorApp(tk.Tk):
             actions, text="当前局后暂停", command=self.pause_resume
         )
         self.pause_button.pack(side="left", padx=(0, 8))
+        self.recover_button = ttk.Button(
+            page, text="已处理，检查并继续", command=self.recover
+        )
+        self.recover_button.pack(anchor="w", pady=8)
         ttk.Button(
             actions, text="当前局后停止", command=lambda: self.send("stop_after")
         ).pack(side="left", padx=(0, 8))
@@ -574,6 +586,15 @@ class CollectorApp(tk.Tk):
             command=lambda: self.start(restart_all=True),
         ).pack(anchor="w", pady=(8, 0))
         ttk.Button(
+            card, text="重新转换已有数据（不打关）", command=self.convert_existing
+        ).pack(anchor="w", pady=8)
+        ttk.Button(card, text="导出诊断包…", command=self.export_diagnostics).pack(
+            anchor="w", pady=8
+        )
+        ttk.Button(card, text="停止无响应任务", command=self.stop_unresponsive).pack(
+            anchor="w", pady=8
+        )
+        ttk.Button(
             card, text="体验演示模式（不会连接游戏）", command=self.open_demo
         ).pack(anchor="w", pady=(8, 0))
 
@@ -591,8 +612,8 @@ class CollectorApp(tk.Tk):
 
     def error(self, error: Exception) -> None:
         self.detail_text.set("操作没有完成，可按提示处理后重试。")
-        self.service.home.mkdir(parents=True, exist_ok=True)
         try:
+            self.service.home.mkdir(parents=True, exist_ok=True)
             with (self.service.home / "app_errors.log").open(
                 "a", encoding="utf-8"
             ) as stream:
@@ -613,6 +634,69 @@ class CollectorApp(tk.Tk):
         else:
             text = str(error)
         messagebox.showerror("操作未完成", text, parent=self)
+
+    def callback_error(self, kind, error, traceback) -> None:
+        """按钮或扫码回调出错时保留窗口并给出普通中文提示。"""
+        self.error(error)
+
+    def recover(self) -> None:
+        """玩家处理登录/磁盘问题后，检查实际条件再恢复原任务。"""
+        if (
+            not self.service.is_running()
+            and not self.service.settings.accepted_notice
+            and not self.service.settings.demo
+        ):
+            self.start()
+            return
+        self.background(
+            self.service.recover,
+            lambda _: self.detail_text.set("检查完成，正在恢复任务"),
+            exclusive=True,
+        )
+
+    def convert_existing(self) -> None:
+        """独立转换已有原件，不要求队列、设备或补给权限。"""
+        try:
+            self.service.start(conversion_only=True)
+            self.show_page("采集面板")
+        except Exception as error:
+            self.error(error)
+
+    def stop_unresponsive(self) -> None:
+        if messagebox.askyesno(
+            "停止本软件任务",
+            "将结束本采集档案的工作进程，保留原始数据。当前局可能需重跑。是否继续？",
+            parent=self,
+        ):
+            self.background(
+                self.service.stop_unresponsive,
+                lambda _: self.detail_text.set("已结束任务，可检查后续跑"),
+                exclusive=True,
+            )
+
+    def export_diagnostics(self) -> None:
+        filename = filedialog.asksaveasfilename(
+            parent=self,
+            title="保存诊断包",
+            defaultextension=".zip",
+            initialfile="采集诊断.zip",
+            filetypes=[("诊断包", "*.zip")],
+        )
+        if filename:
+            self.background(
+                lambda: export_data(
+                    Path(self.service.settings.data_dir),
+                    Path(filename),
+                    diagnostics_home=self.service.home,
+                    diagnostics_only=True,
+                ),
+                lambda _: messagebox.showinfo(
+                    "诊断包已保存",
+                    "已导出脱敏诊断，不含登录凭据和配置原文。",
+                    parent=self,
+                ),
+                exclusive=True,
+            )
 
     def open_demo(self) -> None:
         """从按钮打开独立演示资料，不使用真实任务或真实模拟器。"""
@@ -1129,6 +1213,7 @@ class CollectorApp(tk.Tk):
                     Path(filename),
                     include_images=images,
                     redact_personal=redact_personal,
+                    diagnostics_home=self.service.home,
                 ),
                 lambda result: messagebox.showinfo(
                     "导出完成",
@@ -1245,11 +1330,22 @@ class CollectorApp(tk.Tk):
                 "stopped": "已停止",
                 "error": "需要处理",
                 "interrupted": "可恢复任务",
+                "needs_user": "等待您处理",
+                "storage_error": "保存失败，已停止",
+                "conversion_error": "转换可重试",
+                "unresponsive": "任务无响应",
             }
             self.status_text.set(labels.get(state["status"], "准备中"))
             self.state_badge.configure(
                 bg="#dcfce7" if state["status"] == "running" else "#e8eef8",
                 fg=GREEN if state["status"] == "running" else BLUE,
+            )
+            self.recover_button.configure(
+                state="normal"
+                if state["status"]
+                in ("needs_user", "storage_error", "interrupted", "error", "stopped")
+                and not self.running_action
+                else "disabled"
             )
             if state.get("message"):
                 self.detail_text.set(state["message"])

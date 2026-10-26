@@ -136,6 +136,8 @@ def main() -> int:
         "bridge",
         "--collect-submodules",
         "bridge.collector",
+        "--hidden-import",
+        "ctypes.util",
         "--exclude-module",
         "torch",
         "--exclude-module",

@@ -67,10 +67,10 @@ GRID_UNKNOWN = -1
 """未知编码值（未在词表登记的 h / build / mode）。"""
 
 DEFAULT_MAX_GRID = 0
-"""网格边长上限（实测最大 40×40；超出报错而非静默截断）。"""
+"""0表示保留完整网格；正数仅供显式指定的实验。"""
 
 DEFAULT_MAX_ROUTE_POINTS = 0
-"""单条路线路径点上限（实测最大 132；超出报错）。"""
+"""0表示保留完整路线；正数仅供显式指定的实验。"""
 
 _STRUCT_FLAGS = ("start", "fly_start", "end")
 

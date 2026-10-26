@@ -54,7 +54,7 @@ class TrainConfig:
     w_cell: float = 1.0
     w_dir: float = 0.5
     eval_train_batches: int = 0
-    """train 档评测抽样的 batch 数（holdout 恒全量评测）。"""
+    """0表示训练侧全量评测，holdout恒全量；正数仅供显式指定的实验。"""
 
 
 @dataclass

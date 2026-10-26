@@ -57,14 +57,10 @@ bridge venv 无 torch 也能 import 本模块、跑单测；``--bridge-src`` 方
    无此竞态（细节见两通道类的 docstring）。
 4. **空闲恢复**：单链跑完 assistant 自动停；下一推重新 append + start，
    语义沿用 ``nav_maa.wait_idle``（A 路通道内部处理，B 路天然一推一链）。
-5. **判终/结算**：复用 ``blocker_watchdog`` 与 StartUp 结算推进
-   （``nav_maa.wait_settle``）。判终全部基于数值签名：**开闸** = 签名连续
-   ``gate_change_ticks`` 拍变化（编队壳链收尾 ≠ 战斗打响——首跑 0-3 用
-   in_battle 判死在加载屏就收工放跑了防御；用 in_battle 字段本身则可证
-   在本链路上恒脏）；**自然结束** = 开闸后签名连续 ``freeze_ticks`` 拍冻结
-   （结算屏无计数 UI、数值停更）；兜底是无状态超时、整链超时
-   （闸门未开记 ``battle_never_started``）。动作下发被拒不再中止循环，
-   记 ``actions_lost`` 继续（Deploy 自等待超回收窗口属可恢复情形）。
+5. **判终/结算**：默认按真实HUD、结果页及判负证据识别战斗生命周期，
+   使用 ``blocker_watchdog`` 与 ``nav_maa.wait_settle`` 推进战后剧情和结算。
+   数值冻结、缺状态、动作数量和总时限默认0表示不限；原正数门槛仅供
+   显式指定的实验复现。动作下发失败留痕后继续采集。
 6. **落盘**：沿用 ``episode_writer`` 写 bundle；``source.type`` 用新值
    ``"model_loop"``；episode 额外带 ``model_actions``（模型实际下发的作业
    形态动作序列）与 ``model_loop`` 统计段（动作数/节拍数/拦截次数等）。

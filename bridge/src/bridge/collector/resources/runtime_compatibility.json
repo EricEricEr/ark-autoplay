@@ -1,0 +1,8 @@
+{
+  "schema": "collector_runtime/1",
+  "display_version": "已验证的采集运行库",
+  "accepted_core_sha256": [
+    "f3fa4856ef4b7544acc69445dfadc735a6e19d15aa9c843d947b35d2da707f20"
+  ],
+  "source_reference": "bridge/maacore/UPSTREAM.json"
+}

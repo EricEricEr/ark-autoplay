@@ -391,7 +391,7 @@ class BlockerSentry:
             self.cap_failures += 1
             return None
         self._update_freeze(img, now)
-        kind = detect_blocker(img)
+        kind = self.detect(img)
         if kind is None:
             self._pending = None
             # 画面型未命中 → 停滞检测（仅战斗中；主页/地图合法静滞不可触发）
@@ -420,6 +420,10 @@ class BlockerSentry:
         )
         self._pending = None
         return kind
+
+    def detect(self, image: Any) -> str | None:
+        """允许采集器在本实例内排除需要人工确认的弹窗，不改动全局检测器。"""
+        return detect_blocker(image)
 
     def events(self) -> list[dict[str, Any]]:
         """阻断事件列表（``[{kind, t_ms, n}]``，按发生序），返回副本。"""

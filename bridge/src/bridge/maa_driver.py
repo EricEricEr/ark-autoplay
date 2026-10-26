@@ -114,12 +114,13 @@ def resolve_narrow_path(path: str | Path) -> str:
 
     1. 已是 ASCII：原样返回（零开销）；
     2. Windows 8.3 短名（同目录的 ASCII 别名；**本机已禁用 8.3，实测走不到**）；
-    3. **Junction 别名**（实测可用）：在系统临时目录建
+    3. **Junction 别名**：优先在ASCII临时目录建
        ``arkmaa_<sha1[:10]>`` 目录联接指向目标，返回 ASCII 别名——
        落盘字节经由 NTFS 重解析点写进真实 CJK 目录（"落回正确的 ark-data 下"）。
        联接由 ``mklink /J`` 创建（普通用户权限即可，非 symlink，免提权）；
-       已存在且指向一致则复用。临时目录被系统清理不影响发源地数据，
-       下次进程启动自动重建。
+       已存在且指向一致则复用。临时目录含中文且无短名时，使用
+       ProgramData下按当前用户隔离的兼容目录。缓存清理不影响原数据，
+       下次进程启动自动重建；不覆盖或删除被其他目录占用的别名。
 
     都失败（路径不存在/非 Windows/联接创建被拒）则抛 ``RuntimeError``——
     好过静默把日志写进乱码树。
@@ -140,39 +141,50 @@ def resolve_narrow_path(path: str | Path) -> str:
 
 
 def _junction_alias(p: str) -> str:
-    """为非 ASCII 路径 ``p`` 建/复用系统临时目录下的 ASCII Junction 别名。"""
+    """建立ASCII别名；临时目录含中文时换用兼容缓存，不改系统配置。"""
     import hashlib  # noqa: PLC0415  # 仅乱码救场路径用
     import subprocess  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
 
     digest = hashlib.sha1(p.encode("utf-8")).hexdigest()[:10]
-    alias = Path(tempfile.gettempdir()) / f"arkmaa_{digest}"
-    if alias.exists():
-        same_target = os.path.realpath(alias) == os.path.realpath(p)
-        if os.path.isjunction(alias) and same_target:
-            return str(alias)
-        # 指向变了/不是我们建的联接：先撤后建；普通目录绝不动
-        if os.path.isjunction(alias):
-            subprocess.run(
-                ["cmd", "/c", "rmdir", str(alias)], capture_output=True, check=False
+    roots = [Path(tempfile.gettempdir())]
+    if os.name == "nt" and os.environ.get("PROGRAMDATA"):
+        user_key = hashlib.sha256(str(Path.home()).encode("utf-8")).hexdigest()[:16]
+        roots.append(
+            Path(os.environ["PROGRAMDATA"]) / "ArkAutoplay/path-aliases" / user_key
+        )
+    for root in roots:
+        narrow_root = str(root)
+        if not narrow_root.isascii():
+            narrow_root = _win32_short_name(narrow_root) or ""
+        if not narrow_root or not narrow_root.isascii():
+            continue
+        root = Path(narrow_root)
+        alias = root / f"arkmaa_{digest}"
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            if os.path.lexists(alias):
+                if os.path.isjunction(alias) and os.path.samefile(alias, p):
+                    return str(alias)
+                raise RuntimeError(f"MAA兼容目录被占用，拒绝覆盖：{alias}")
+            result = subprocess.run(
+                ["cmd", "/d", "/c", "mklink", "/J", str(alias), p],
+                capture_output=True,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-        if alias.exists():
-            raise RuntimeError(f"Junction 别名被非联接目录占用，拒绝覆盖: {alias}")
-    try:
-        r = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(alias), p],
-            capture_output=True,
-            check=False,
-        )
-        ok = r.returncode == 0
-    except OSError:  # 非 Windows 无 cmd
-        ok = False
-    if not ok or not alias.exists():
-        raise RuntimeError(
-            f"创建 Junction 别名失败 rc={r.returncode}: {alias} -> {p}。"
-            "请将数据落盘根迁到纯 ASCII 路径后重试。"
-        )
-    return str(alias)
+            if (
+                result.returncode == 0
+                and os.path.isjunction(alias)
+                and os.path.samefile(alias, p)
+            ):
+                return str(alias)
+        except OSError:
+            continue
+    raise RuntimeError(
+        "无法准备MAA兼容目录。可在软件设置中以管理员权限重新打开，"
+        "或将采集运行库与数据位置选择为纯英文路径后重试。"
+    )
 
 
 def _win32_short_name(path: str) -> str | None:

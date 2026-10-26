@@ -2,12 +2,15 @@
 
 合并仓 `ark-autoplay` 的数据工厂：通过补丁 MaaCore 重放 prts.plus 作业，将动作前战场状态、执行事件和节拍截图保存成每局一个 bundle。
 
-**协助采集请读 [采集者指南](docs/collecting.md)。** 运行时来源、版本和重建见 [maacore/README.md](maacore/README.md)；上游关系见 [NOTICE.md](NOTICE.md)。
+**普通玩家使用 Windows 采集助手：解压完整软件包，双击 `ArkCollector.exe`，无需安装 Python 或 Node.js，也不用输入命令。** 首次选择 MuMu、配套采集运行库和维护者提供的任务包，步骤见 [图形界面使用说明](docs/collector-app.md)。
+
+协作分工见 [采集者指南](docs/collecting.md)。运行时来源、版本和重建见 [maacore/README.md](maacore/README.md)；上游关系见 [NOTICE.md](NOTICE.md)。
 
 ## 当前实现（2026-10-26）
 
 | 模块 | 能力与边界 |
 |---|---|
+| `collector` | 中文桌面采集界面，设备发现、扫码练度、任务导入、暂停续跑、失败隔离、本地转换和导出；需要外置配套采集运行库 |
 | `maa_driver` | MAA 连接、回调、截图/输入、SingleStep 参数下发 |
 | `replay_controller` | 回主页、Fight `nav_only` 导航、Copilot 编队重放、结算、落盘 |
 | `battle_state` / `state_logger` | 动作前状态；1.5 秒节拍截图和事件补拍，并非连续全帧采样 |

@@ -76,11 +76,13 @@ export function buildRoster(info, role = {}, now = new Date()) {
 }
 
 export async function login({ fetchImpl = globalThis.fetch, log = console.log,
-  pause = sleep, timeoutMs = 180000, now = Date.now } = {}) {
+  pause = sleep, timeoutMs = 180000, now = Date.now, onQr = null } = {}) {
   const scan = await hgGenScanLogin(fetchImpl, DEVICE_ID)
   if (!scan?.scanId) throw new Error('扫码响应缺少 scanId')
   log('请用手机森空岛 APP 扫码并确认，程序随后自动导出练度：')
-  log(renderTerminalQr(scan.scanUrl || `${DEEP_LINK_PREFIX}${scan.scanId}`))
+  const scanUrl = scan.scanUrl || `${DEEP_LINK_PREFIX}${scan.scanId}`
+  if (onQr) await onQr(scanUrl)
+  else log(renderTerminalQr(scanUrl))
   const deadline = now() + timeoutMs
   let scanCode
   while (now() < deadline) {
@@ -100,7 +102,7 @@ export async function login({ fetchImpl = globalThis.fetch, log = console.log,
 
 export async function runCollect({ outPath, uid = null, credPath = DEFAULT_CRED,
   fixturePath = null, forceLogin = false, fetchImpl = globalThis.fetch,
-  loginImpl = login, log = console.log } = {}) {
+  loginImpl = login, rolePicker = pickRole, log = console.log } = {}) {
   if (!outPath) throw new Error('必须指定 --out 输出名册路径')
   let info, role = {}
   if (fixturePath) {
@@ -129,7 +131,7 @@ export async function runCollect({ outPath, uid = null, credPath = DEFAULT_CRED,
       catch { await reauthenticate() }
       return fn(credential)
     }
-    role = pickRole(await call(c => sklandBinding(fetchImpl, c)), uid)
+    role = await rolePicker(await call(c => sklandBinding(fetchImpl, c)), uid)
     log(`本次名册：${role.channelName ?? ''} ${role.nickName ?? ''} UID=${role.uid}`)
     info = await call(c => sklandPlayerInfo(fetchImpl, c, role.uid))
   }

@@ -102,3 +102,42 @@ def test_nonexistent_path_raises(tmp_path: Path) -> None:
     """不存在且含非 ASCII 的路径：拿不到短名，明确报错拒绝静默写乱码。"""
     with pytest.raises(RuntimeError):
         resolve_narrow_path(tmp_path / "不存在的目录？")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows路径兼容")
+def test_unicode_temp_uses_ascii_cache_without_deleting_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """中文临时目录不返回乱码路径，兼容别名可复用且不覆盖已有目录。"""
+    import hashlib
+    import tempfile
+
+    target = tmp_path / "中文数据？"
+    target.mkdir()
+    temporary = tmp_path / "中文临时"
+    temporary.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temporary))
+    monkeypatch.setattr("bridge.maa_driver._win32_short_name", lambda _: None)
+    cache = Path(os.environ["PROGRAMDATA"]) / "synthetic-path-test"
+    if not str(cache).isascii():
+        pytest.skip("本次测试没有可写的ASCII兼容缓存")
+    monkeypatch.setenv("PROGRAMDATA", str(cache))
+    alias = resolve_narrow_path(target)
+    assert alias.isascii() and os.path.samefile(alias, target)
+    probe = target / "probe.txt"
+    probe.write_text("synthetic", encoding="utf-8")
+    assert (Path(alias) / probe.name).read_text(encoding="utf-8") == "synthetic"
+    assert resolve_narrow_path(target) == alias
+
+    occupied_target = tmp_path / "另一目录"
+    occupied_target.mkdir()
+    digest = hashlib.sha1(str(occupied_target.resolve()).encode("utf-8")).hexdigest()[
+        :10
+    ]
+    occupied = Path(alias).with_name(f"arkmaa_{digest}")
+    occupied.mkdir()
+    marker = occupied / "keep.txt"
+    marker.write_text("untouched", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="拒绝覆盖"):
+        resolve_narrow_path(occupied_target)
+    assert marker.read_text(encoding="utf-8") == "untouched"

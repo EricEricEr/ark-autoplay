@@ -1,0 +1,39 @@
+experiment:
+  seed: 42
+  device: cuda
+data:
+  manifest: ${ARK_ALL_FIELDS_INPUT}/input_manifest.json
+  processed_dir: ${ARK_ALL_FIELDS_INPUT}/processed
+  expected_records: 539
+rotation:
+  k: 5
+  final_pretrain_ckpt: ${ARK_ROTATION_PRETRAIN}
+model:
+  hidden_dim: 256
+  num_layers: 4
+  num_dec_layers: 2
+  num_heads: 8
+  dropout: 0.1
+training:
+  epochs: 20
+  batch_size: 1
+  lr: 0.0003
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_train_batches: 0
+auxiliary:
+  mask_rate: 0.25
+  huber_delta: 1.0
+  progress_every_records: 32
+  weights:
+    cells: 1.0
+    spawns: 1.0
+    squad: 1.0
+    states: 1.0
+    plan: 0.5
+    outcome: 0.5
+    marker: 0.25
+    failure: 0.25
+    policy: 1.0
+evaluation:
+  runs_dir: ${ARK_ALL_FIELDS_OUTPUT}/runs

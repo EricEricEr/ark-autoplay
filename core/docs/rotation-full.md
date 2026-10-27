@@ -1,5 +1,7 @@
 # 轮换验证与最终全量拟合
 
+539份资料的当前全字段入口与用途口径见 [全部资料按可用字段训练](all-fields.md)。本文保留状态—动作监督池轮换的接口说明。
+
 用户已确认采用“轮换验证＋最终全量训练”：每份可配对状态—动作记录轮流参与训练和验证，最终模型再使用全部合格记录拟合。原始失败、未知、无标签和未配对数据保留原件及用途记录，不伪造监督标签。
 
 入口为 `python -m ark_core.training.rotation --config configs/rotation_full.yaml`。维护者通过 `ARK_ROTATION_ROOT` 指定独立快照目录，通过 `ARK_ROTATION_PRETRAIN` 指定最终拟合使用的预训练权重。真实目录、数据及权重不提交 Git。

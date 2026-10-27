@@ -39,6 +39,8 @@ uv run ruff check
 
 纯采集依赖 numpy、Pillow、PyYAML，无需 torch/GPU。按 [完整实例模板](configs/instances/example.yaml) 创建本地副本，再提供 `--instance`、`--jobs`、`--nav`、`--work`。
 
+项目数据须选择非C盘目录，软件设置、登录态和系统缓存保留常规默认位置。窗口版先选择“数据保存位置”；命令行显式传入数据目录及实例配置，导航使用该实例的ADB路径与端口。
+
 练度优先使用 [森空岛扫码入口](tools/skland/README.md)；Node.js 18+，无 npm 依赖。不能扫码的账号才使用 OperBox 并补充技能/模组资料。
 
 采集者默认禁止源石补理智，缺少 `resource_policy.allow_originite` 时也视为 false；非零源石任务参数在调用 MAA 前被拒绝。维护者自抽号的单独授权不进入公共模板。理智不足时暂停处理，自动吃药保持原有关闭默认值。

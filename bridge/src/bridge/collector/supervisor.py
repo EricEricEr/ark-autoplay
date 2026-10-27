@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from bridge.candidate_coverage import execution_key
+from bridge.data_paths import data_path
 
 from .resilience import NeedsUser, account_key, reconcile, unhealthy, writable_probe
 from .storage import Settings, append_json, now, process_birth, read_json, write_json
@@ -24,6 +25,8 @@ def run(spec_path: Path, runtime: Any) -> int:
     """隔离运行全部任务，恢复只重试未完成项，不按连续失败数停止。"""
     spec = read_json(spec_path)
     settings = Settings(**spec["settings"])
+    if not settings.demo:
+        data_path(settings.data_dir)
     run_dir, data = Path(spec["run_dir"]), Path(settings.data_dir)
     account = account_key(settings)
     ledger = data / (

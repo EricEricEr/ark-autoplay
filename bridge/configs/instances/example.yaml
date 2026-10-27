@@ -7,10 +7,10 @@ resolution:
   width: 1920
   height: 1080
 dpi: 320
-adb_path: C:/MuMu/nx_main/adb.exe
+adb_path: ''  # 填写你自行选择的MuMu安装目录内的adb.exe完整路径。
 # 当前工厂有目录名护栏：路径中须含 maa_runtime_patched。
 # 名称本身不能证明 DLL 已打补丁；须用 maacore/README.md 的配套运行时。
-maa_dir: C:/ark/maa_runtime_patched
+maa_dir: ''  # 填写你自行选择的配套maa_runtime_patched完整路径。
 maa_version: dev-v2+a82a0e13+runtime-patch
 resource_policy:
   # 所有采集者默认禁止；不得继承维护者自抽号的源石授权。

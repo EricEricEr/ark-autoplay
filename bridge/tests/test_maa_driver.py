@@ -63,13 +63,17 @@ def test_wait_chain_timeout_returns_none_terminal() -> None:
     assert res.terminal_msg is None
 
 
-def test_ascii_path_passthrough(tmp_path: Path) -> None:
+def test_ascii_path_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
     """纯 ASCII 路径原样返回（规范化后），不做任何改写。"""
-    d = tmp_path / "maa_user_ascii"
-    d.mkdir()
+    d = Path("Z:/synthetic-maa-user" if os.name == "nt" else "/synthetic-maa-user")
+
+    def forbidden_alias(*args):
+        pytest.fail("纯ASCII路径不应建立兼容别名")
+
+    monkeypatch.setattr("bridge.maa_driver._junction_alias", forbidden_alias)
     out = resolve_narrow_path(d)
     assert out.isascii()
-    assert os.path.samefile(out, d)
+    assert out == str(d.resolve())
 
 
 def test_cjk_fullwidth_path_shortened(tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from bridge.data_paths import data_path
 from bridge.maa_driver import MaaDriver, MaaEvent, load_instance_config
 from bridge.nav_maa import wait_settle
 
@@ -45,6 +46,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--user-dir", type=Path, required=True, help="MAA 本地日志目录")
     parser.add_argument("--timeout", type=float, default=420.0, help="扫描超时秒数")
     args = parser.parse_args(argv)
+    try:
+        args.out = data_path(args.out, label="名册输出位置")
+    except ValueError as error:
+        parser.error(str(error))
     if args.timeout <= 0:
         parser.error("--timeout 必须大于 0")
     driver = MaaDriver(load_instance_config(args.instance), args.user_dir)

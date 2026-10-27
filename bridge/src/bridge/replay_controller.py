@@ -189,7 +189,8 @@ def assert_patched_runtime(inst: dict[str, Any], cfg_path: str | Path) -> None:
         raise RuntimeError(
             f"instance={cfg_path} 的 maa_dir={maa_dir!r} 不是打过补丁的运行时，"
             "拒绝启动：未打补丁时 nav_only 失效、Fight 会直接开打并启用游戏内代理指挥。"
-            "请使用 configs/instances/mumu_local_patched.yaml。"
+            "请复制实例模板为自己的 *.local.yaml，"
+            "填写配套补丁运行库，并用 --instance 指定。"
         )
 
 
@@ -247,7 +248,9 @@ class ReplayController:
         work_root: str | Path,
     ) -> None:
         """装配驱动/导航/写出；``work_root`` 为数据落盘根（机器本地）。"""
-        self._work = Path(work_root)
+        from bridge.data_paths import data_path
+
+        self._work = data_path(work_root)
         (self._work / "tmp" / "maa_jobs").mkdir(parents=True, exist_ok=True)
         maa_user = self._work / "debug" / "maa_user"
         maa_user.mkdir(parents=True, exist_ok=True)
@@ -892,8 +895,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--instance",
-        default=str(root / "configs" / "instances" / "mumu_local_patched.yaml"),
-        help="实例定义",
+        required=True,
+        help="用户自行配置的本地实例 YAML",
     )
     parser.add_argument(
         "--nav", default=str(root / "configs" / "nav_main.yaml"), help="导航点位表"

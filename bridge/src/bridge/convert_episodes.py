@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from bridge.copilot_schema import ACTION_EVENT
+from bridge.data_paths import data_path
 
 VERSION = "collector_state_action/1.0"
 
@@ -213,7 +214,7 @@ def _write_json(path: Path, obj: Any) -> None:
 
 def convert(data_root: Path, out: Path) -> dict[str, Any]:
     """输出独立、可搬家的转换包；从不追加旧结果或改动/删除原始数据。"""
-    data_root, out = data_root.resolve(), out.resolve()
+    data_root, out = data_root.resolve(), data_path(out, label="转换输出位置")
     if out.exists():
         raise FileExistsError("输出目录已存在；请换一个新目录，不能重复追加")
     ep_root = data_root / "episodes"

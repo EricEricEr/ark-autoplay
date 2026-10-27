@@ -248,11 +248,19 @@ def main(argv: list[str] | None = None) -> int:
                          "计算部署掩码并打印摘要")
     ap.add_argument("--mask-n", type=int, default=5)
     args = ap.parse_args(argv)
+    if args.out is not None:
+        from bridge.data_paths import data_path
+
+        try:
+            args.out = data_path(args.out, label="名册输出位置")
+        except ValueError as error:
+            ap.error(str(error))
 
     st = build_state(operbox=args.operbox, skland=args.skland, overrides=args.overrides)
     print(f"merged {len(st.ops)} ops: {st.to_json()['provenance_counts']}")
 
     if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(
             json.dumps(st.to_json(), ensure_ascii=False, indent=1), encoding="utf-8"
         )

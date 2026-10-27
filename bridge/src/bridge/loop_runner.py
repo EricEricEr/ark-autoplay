@@ -973,7 +973,9 @@ class LoopRunner:
         loop_config: LoopConfig,
     ) -> None:
         """装配驱动/导航/写出/看门狗线；防线与 replay_controller 完全同款。"""
-        self._work = Path(work_root)
+        from bridge.data_paths import data_path
+
+        self._work = data_path(work_root)
         (self._work / "tmp" / "maa_jobs").mkdir(parents=True, exist_ok=True)
         maa_user = self._work / "debug" / "maa_user"
         maa_user.mkdir(parents=True, exist_ok=True)
@@ -1425,7 +1427,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--instance",
-        default=str(root / "configs" / "instances" / "mumu_local_patched.yaml"),
+        required=True,
         help="实例定义（必须 patched 运行时）",
     )
     parser.add_argument(

@@ -188,27 +188,8 @@ def _tap_camp_entry(driver: MaaDriver, stage_code: str) -> None:
     再按 _CAMP_ENTRY_Y 的固定 y 点击；y 坐标只在列表处于顶部时才确定。
     """
     try:
-        import subprocess as _sp
-
-        _adb = r"E:\Program Files\Netease\MuMu\nx_main\adb.exe"
         for _ in range(3):
-            _sp.run(
-                [
-                    _adb,
-                    "-s",
-                    "127.0.0.1:16416",
-                    "shell",
-                    "input",
-                    "swipe",
-                    "1466",
-                    "380",
-                    "1466",
-                    "1000",
-                    "260",
-                ],
-                capture_output=True,
-                timeout=25,
-            )
+            driver.swipe(1466, 380, 1466, 1000, 260)
             time.sleep(0.6)
         time.sleep(1.0)
         print("[nav] 剿灭列表已滚回顶部", flush=True)

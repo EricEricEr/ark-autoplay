@@ -9,6 +9,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from bridge.data_paths import data_path
+
 from .storage import now
 
 PRIVATE_KEYS = {
@@ -70,6 +72,8 @@ def export_data(
     diagnostics_only: bool = False,
 ) -> dict[str, int]:
     """创建新ZIP，原件不删改；分享范围由玩家在导出界面明确选择。"""
+    if not diagnostics_only:
+        target = data_path(target, label="采集包导出位置")
     if target.exists():
         raise ValueError("请选择新的导出文件名，已有文件不会被覆盖")
     root = data_root.resolve()

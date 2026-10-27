@@ -97,6 +97,18 @@ def load_instance_config(path: str | Path) -> dict[str, Any]:
     for key in ("adb_path", "adb_host", "adb_port", "maa_dir", "resolution"):
         if key not in cfg:
             raise ValueError(f"实例配置缺少字段 {key}: {path}")
+    for key in ("adb_path", "adb_host", "maa_dir"):
+        if not isinstance(cfg[key], str) or not cfg[key].strip():
+            raise ValueError(f"请在本地实例配置中填写 {key}: {path}")
+    port = cfg["adb_port"]
+    if (
+        isinstance(port, bool)
+        or not isinstance(port, (int, str))
+        or not str(port).isdigit()
+        or not 1 <= int(port) <= 65535
+    ):
+        raise ValueError(f"请填写当前MuMu实例的有效 adb_port: {path}")
+    cfg["adb_port"] = int(port)
     originite_allowed(cfg)  # 在连接 DLL/游戏之前拒绝含糊的资源授权值。
     return cfg
 
@@ -492,8 +504,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="maa_driver 连接冒烟")
     parser.add_argument(
         "--instance",
-        default=str(_repo_root() / "configs" / "instances" / "mumu_local.yaml"),
-        help="实例定义 yaml（默认 configs/instances/mumu_local.yaml）",
+        required=True,
+        help="用户自行配置的本地实例 YAML",
     )
     parser.add_argument(
         "--user-dir",

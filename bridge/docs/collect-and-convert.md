@@ -30,12 +30,17 @@
 在仓库 `bridge/` 目录执行，输入为本批原始数据根（含 `episodes/` 与 `tmp/maa_jobs/`）。输出必须是尚不存在的新目录：
 
 ```powershell
-uv sync --frozen
 $env:PYTHONUTF8 = '1'
-uv run python -m bridge.convert_episodes --data-root C:/ark-data --out C:/ark-export/batch_20261026_001
+$dataRoot = Read-Host '输入本批原始数据根目录的完整路径'
+$exportRoot = Read-Host '输入非C盘的新转换输出目录完整路径（由你自行选择）'
+if ([string]::IsNullOrWhiteSpace($dataRoot) -or [string]::IsNullOrWhiteSpace($exportRoot)) { throw '输入和输出目录均须由你指定' }
+uv sync --frozen
+uv run python -m bridge.convert_episodes --data-root "$dataRoot" --out "$exportRoot"
 ```
 
 命令不连接游戏、不访问网络、不读取画面。原件不修改、不删除；已存在的输出目录会报错，防止旧 ETL 那样追加出重复样本。重跑请用新的批次目录。
+
+转换输出在创建目录前校验非C盘；旧原件可以从C盘读取，但新产物须选择其他磁盘。常规系统缓存保持原有默认位置。
 
 ## 2. 这一步转换什么
 

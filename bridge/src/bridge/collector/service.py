@@ -13,6 +13,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from bridge.data_paths import data_path
+
 from .discovery import check_runtime
 from .resilience import account_key, load_settings, reconcile, writable_probe
 from .storage import (
@@ -52,8 +54,6 @@ class CollectorService:
         self.home.mkdir(parents=True, exist_ok=True)
         self.settings_file = self.home / "settings.local.json"
         self.settings, self.startup_notice = load_settings(self.settings_file)
-        if not self.settings.data_dir:
-            self.settings.data_dir = str(self.home / "data")
         if not self.settings.account_binding:
             self.settings.account_binding = f"local-{uuid.uuid4().hex}"
         self.process: subprocess.Popen | None = None
@@ -63,13 +63,32 @@ class CollectorService:
             self.prepare_demo()
         elif self.settings.demo:
             self.settings.demo = False
-            self.settings.data_dir = str(self.home / "data")
+            self.settings.data_dir = ""
             self.settings.queue_file = ""
             self.settings.last_run_dir = ""
 
     def save(self) -> None:
         """保存界面已明确选择的选项。"""
         self.settings.save(self.settings_file)
+
+    def data_root(self) -> Path:
+        """真实资料必须由用户选择非C盘目录；演示合成资料留在独立演示档案。"""
+        if self.settings.demo:
+            return Path(self.settings.data_dir).resolve()
+        return data_path(self.settings.data_dir)
+
+    def set_data_directory(self, value: str | Path) -> None:
+        """保存有效的数据目录；换目录后重新导入任务，原目录和任务原件保留。"""
+        selected = data_path(value)
+        if self.is_running():
+            raise RuntimeError("请先停止当前任务再修改数据位置")
+        previous = self.settings.data_dir
+        changed = not previous or Path(previous).expanduser().resolve() != selected
+        self.settings.data_dir = str(selected)
+        if changed:
+            self.settings.queue_file = ""
+            self.settings.last_run_dir = ""
+        self.save()
 
     def prepare_demo(self) -> None:
         """演示仅使用合成任务，单独的数据目录不会被当成真实轨迹。"""
@@ -97,7 +116,7 @@ class CollectorService:
         """玩家点击导入后，建立本地任务副本。"""
         if self.is_running():
             raise RuntimeError("请先完成当前采集，再更换任务")
-        path, details = import_queue(source, Path(self.settings.data_dir))
+        path, details = import_queue(source, self.data_root())
         self.settings.queue_file = str(path)
         self.settings.last_run_dir = ""
         self.save()
@@ -192,6 +211,7 @@ class CollectorService:
         """开始新一轮或续跑；运行版本无需Python环境或命令窗口。"""
         if self.is_running():
             raise RuntimeError("采集已经在进行")
+        data_root = self.data_root()
         if not conversion_only:
             self.task_summary()
         if not conversion_only and not self.settings.queue_file:
@@ -208,7 +228,6 @@ class CollectorService:
                 self.settings.allow_originite or self.settings.allow_medicine
             ) and not self.settings.resource_authorized_at:
                 raise ValueError("补给选项尚未得到账号持有者确认")
-        data_root = Path(self.settings.data_dir)
         data_root.mkdir(parents=True, exist_ok=True)
         writable_probe(data_root)
         reconcile(data_root, account_key(self.settings), demo=self.settings.demo)
@@ -267,7 +286,7 @@ class CollectorService:
 
     def recover(self) -> None:
         """界面一键检查磁盘、核对记账并恢复，所有操作仍在本地。"""
-        writable_probe(Path(self.settings.data_dir))
+        writable_probe(self.data_root())
         if self.is_running():
             self.send("resume_checked")
         else:

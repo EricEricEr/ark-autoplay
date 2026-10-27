@@ -6,7 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { buildRoster, login, pickRole, runCollect } from './collect.mjs'
+import { buildRoster, login, pickRole, resolveLocations, runCollect } from './collect.mjs'
 
 const fixture = {
   status: { uid: 'SYNTHETIC_UID', name: '合成博士' },
@@ -146,4 +146,57 @@ test('--help is available without login or static game data', () => {
   const result = spawnSync(process.execPath, [script, '--help'], { encoding: 'utf8' })
   assert.equal(result.status, 0)
   assert.ok(result.stdout.includes('--out'))
+})
+
+test('chosen data root contains both default roster and credentials, including spaces and Unicode', async t => {
+  const dir = await temporary(t), dataRoot = path.join(dir, '自选 数据目录')
+  const locations = resolveLocations({ dataRoot })
+  assert.equal(locations.outPath, path.join(dataRoot, 'roster/roster_skland.json'))
+  assert.equal(locations.credPath, path.join(dataRoot, '.secrets/skland_cred.json'))
+  const fetchImpl = async url => respond({ code: 0, data: url.includes('/player/binding') ? binding : fixture })
+  await runCollect({ dataRoot, fetchImpl,
+    loginImpl: async () => ({ cred: 'SYN_LOCATION_CRED', token: 'SYN_LOCATION_TOKEN' }), log: () => {} })
+  assert.equal(JSON.parse(await readFile(locations.outPath, 'utf8')).ops.length, 1)
+  assert.equal(JSON.parse(await readFile(locations.credPath, 'utf8')).cred, 'SYN_LOCATION_CRED')
+})
+
+test('output-only compatibility keeps credentials beside chosen output; explicit overrides are honored', async t => {
+  const dir = await temporary(t), outPath = path.join(dir, 'chosen/roster.json')
+  assert.equal(resolveLocations({ outPath }).credPath, path.join(dir, 'chosen/.secrets/skland_cred.json'))
+  const credPath = path.join(dir, 'private/session.json')
+  assert.deepEqual(resolveLocations({ dataRoot: path.join(dir, 'data'), outPath, credPath }), { outPath, credPath })
+})
+
+test('missing or blank locations fail before login or network access', async () => {
+  const fail = () => { throw new Error('Network/login must not be called') }
+  for (const locations of [{}, { dataRoot: '  ' }, { outPath: '' }, { dataRoot: '.', credPath: '' }]) {
+    await assert.rejects(runCollect({ ...locations, fetchImpl: fail, loginImpl: fail }), /目录|路径|不能为空/)
+  }
+})
+
+test('CLI data-root writes an offline fixture only below the selected directory', async t => {
+  const dir = await temporary(t), dataRoot = path.join(dir, '自选 根目录')
+  const input = path.join(dir, 'fixture.json')
+  await writeFile(input, JSON.stringify(fixture))
+  const script = fileURLToPath(new URL('./collect.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [script, '--data-root', dataRoot, '--fixture', input], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(JSON.parse(await readFile(path.join(dataRoot, 'roster/roster_skland.json'), 'utf8')).ops.length, 1)
+  await assert.rejects(readFile(path.join(dataRoot, '.secrets/skland_cred.json')), { code: 'ENOENT' })
+})
+
+test('C-drive data roots and exports fail before login, network access or fixture reads', async () => {
+  let called = false
+  const fail = () => { called = true; throw new Error('No login/network expected') }
+  for (const locations of [
+    { dataRoot: 'C:/synthetic-data' }, { outPath: 'c:\\synthetic-roster.json' },
+    { dataRoot: '.', outPath: 'C:/synthetic-roster.json' },
+  ]) await assert.rejects(runCollect({ ...locations, fetchImpl: fail, loginImpl: fail }), /C盘/)
+  assert.equal(called, false)
+})
+
+test('an explicitly selected system credential file is allowed independently of data', async t => {
+  const dir = await temporary(t)
+  const locations = resolveLocations({ dataRoot: dir, credPath: 'C:/SyntheticAppData/session.json' })
+  assert.equal(locations.credPath, path.resolve('C:/SyntheticAppData/session.json'))
 })

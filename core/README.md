@@ -56,7 +56,7 @@ uv run python -m ark_core.datapipe.build all
 
 - 源路径全部走 `configs/data.yaml` + `ARK_DATA_ROOT`（代码内零机器路径）；缺源时报错会列出缺失清单与修复指引。
 - Deploy 非干员名三类 subtype（device / category / unknown_name）的词表在 `configs/deploy_vocab.yaml`；地形 / 路线编码表在 `configs/tile_vocab.yaml`（数据即配置）。
-- 产物默认输出到 `<数据根>/processed/`；真实数据产物永不入库（见下方红线）。
+- 已配置数据根时，产物默认输出到 `<数据根>/processed/`；未配置数据根时须显式指定 `--out` 或绝对输出目录，不回退写入仓库。目录及单个产物输出均校验非C盘，旧输入原件可继续读取。真实数据产物永不入库（见下方红线）。
 
 ### 关卡静态特征（stagefeat）
 

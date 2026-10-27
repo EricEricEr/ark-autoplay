@@ -2,8 +2,9 @@
 // 既有森空岛扫码通道的采集入口：一次命令完成登录和名册导出，无 npm 依赖。
 // 保留全部技能/模组 ID、等级及 player/info 原始数据，不依赖静态名录筛选干员。
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { existsSync, realpathSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import {
   DEEP_LINK_PREFIX, hgGenScanLogin, hgGrant, hgScanStatus, hgTokenByScanCode,
   interpretScanEnvelope, isAuthFailure, sklandBinding, sklandCredByCode,
@@ -11,8 +12,6 @@ import {
 } from './lib/skland.mjs'
 import { renderTerminalQr } from './lib/qr_terminal.mjs'
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
-const DEFAULT_CRED = path.join(ROOT, '.secrets/skland_cred.json')
 // 沿用本项目已验证的客户端指纹常量，不是用户凭证。
 const DEVICE_ID = 'BqbjCY5HN8T+MFmjvDT4ceaUO6zSMuvdts2+67sjAL4QTA3GfE7M1rDkuUo8Hbhl03557VponqkJW2Z1wh+/nYA=='
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -100,10 +99,35 @@ export async function login({ fetchImpl = globalThis.fetch, log = console.log,
   }
 }
 
-export async function runCollect({ outPath, uid = null, credPath = DEFAULT_CRED,
+function dataLocation(value) {
+  const resolved = path.resolve(value)
+  let existing = resolved
+  while (!existsSync(existing) && path.dirname(existing) !== existing) existing = path.dirname(existing)
+  const candidates = [value, resolved]
+  if (existsSync(existing)) candidates.push(realpathSync.native(existing))
+  if (candidates.some(candidate => path.win32.parse(candidate).root.toLowerCase().includes('c:')))
+    throw new Error('项目数据不能保存到C盘，请选择其他磁盘；系统默认设置和缓存不受此限制')
+  return resolved
+}
+
+export function resolveLocations({ dataRoot = null, outPath = null, credPath = null } = {}) {
+  if (dataRoot != null && (typeof dataRoot !== 'string' || !dataRoot.trim()))
+    throw new Error('--data-root 不能为空，请指定自己的数据目录')
+  if (outPath != null && (typeof outPath !== 'string' || !outPath.trim()))
+    throw new Error('--out 不能为空')
+  if (credPath != null && (typeof credPath !== 'string' || !credPath.trim()))
+    throw new Error('--cred 不能为空')
+  const root = dataRoot == null ? null : dataLocation(dataRoot)
+  if (!outPath && !root) throw new Error('必须指定 --data-root 数据目录或 --out 输出名册路径')
+  const output = dataLocation(outPath ?? path.join(root, 'roster/roster_skland.json'))
+  return { outPath: output,
+    credPath: path.resolve(credPath ?? path.join(root ?? path.dirname(output), '.secrets/skland_cred.json')) }
+}
+
+export async function runCollect({ dataRoot = null, outPath, uid = null, credPath = null,
   fixturePath = null, forceLogin = false, fetchImpl = globalThis.fetch,
   loginImpl = login, rolePicker = pickRole, log = console.log } = {}) {
-  if (!outPath) throw new Error('必须指定 --out 输出名册路径')
+  ;({ outPath, credPath } = resolveLocations({ dataRoot, outPath, credPath }))
   let info, role = {}
   if (fixturePath) {
     const fixture = await readJson(fixturePath)
@@ -143,12 +167,13 @@ export async function runCollect({ outPath, uid = null, credPath = DEFAULT_CRED,
 
 export async function main(args = process.argv.slice(2)) {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('node tools/skland/collect.mjs --out <名册.json> [--uid <游戏UID>] [--login] [--cred <本地凭证.json>] [--fixture <离线样例.json>]')
+    console.log('node tools/skland/collect.mjs --data-root <自选数据目录> [--out <名册.json>] [--uid <游戏UID>] [--login] [--cred <本地凭证.json>] [--fixture <离线样例.json>]')
     console.log('首次显示二维码；确认后自动导出。--login 强制重新扫码。--fixture 离线、不读凭证。')
+    console.log('名册和凭据默认保存到自选数据目录；仅给 --out 时，凭据保存到名册旁的 .secrets，不写仓库或系统默认目录。')
     return
   }
   const options = {}
-  const values = { '--out': 'outPath', '--uid': 'uid', '--cred': 'credPath', '--fixture': 'fixturePath' }
+  const values = { '--data-root': 'dataRoot', '--out': 'outPath', '--uid': 'uid', '--cred': 'credPath', '--fixture': 'fixturePath' }
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--login') { options.forceLogin = true; continue }
     const key = values[args[i]]

@@ -20,6 +20,7 @@ Arknights Autoplay 合并仓的 `bridge/` 子目录：**数据工厂 + 战场状
 9. **理智药按账号授权**（用户明确 C18）：共享模板 `resource_policy.allow_medicine: false`，缺项等同 false；本机自抽号的单独授权不适用于其他账号。
 10. **候选覆盖与原始数据完整保留**（用户明确）：无固定编队的作业每名合格候选至少覆盖一次，不穷举所有合法组合。全部支持的动作和字段原样保存；缺失参数不能猜填；观察采集不伪造战术动作。计划、尝试、进入战斗和胜利分别统计。
 11. **模型采集不按旧冒烟门槛截断整局**（用户明确 E01–E04）：默认动作数、总时限、无状态及冻结拍数均为0（不限），用真实HUD/结果证据判终。专家工厂的既有执行超时另行保留，不能混同取消。
+12. **项目数据目录与系统默认目录分开处理**（用户2026-10-27澄清并要求修复）：AppData、TEMP、ProgramData等常规默认位置允许在C盘，保持正常默认行为。真实采集、名册、转换及数据包输出由用户选择非C盘位置，入口在写入/连接前校验，不能把真实资料默认塞入AppData。剿灭导航复用当前实例，CLI显式指定本地实例配置，不替用户写死盘符、安装路径或设备端口。已有资料不擅自迁移或删除。
 
 ## 目录布局
 
@@ -58,7 +59,7 @@ Arknights Autoplay 合并仓的 `bridge/` 子目录：**数据工厂 + 战场状
 - **MuMu 12 模拟器**（1920×1080 / DPI 320）+ 其自带 adb；实例地址入同上配置。
 - 数据落盘根（episodes/tmp/debug）由运行参数 `--work` 指定，属机器本地目录。
 - 采集分工见 `docs/collect-only.md` 与 `docs/collect-and-convert.md`；当前结构化训练不需要 MP4/PNG 输入。`python -m bridge.convert_episodes --data-root <根> --out <新目录>` 仅用标准库做离线转换，不连接游戏、不建词表或分配训练划分。
-- 练度采集优先 `tools/skland/collect.mjs` 一键扫码导出（现有 Node.js 18+，无 npm 依赖）；不能扫码才用 OperBox。全部技能/模组和原始响应保留在名册中，登录态只留本地 `.secrets/`。扫码工具离线检查：`node --test tools/skland/collect.test.mjs`。
+- 练度采集优先 `tools/skland/collect.mjs --data-root <自选目录>` 一键扫码导出（现有 Node.js 18+，无 npm 依赖）；不能扫码才用 OperBox。全部技能/模组和原始响应保留在名册中，登录态留在所选目录的 `.secrets/`。扫码工具离线检查：`node --test tools/skland/collect.test.mjs`。
 
 ## 环境命令
 

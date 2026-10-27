@@ -4,7 +4,7 @@
 
 ## 点击流程
 
-1. 完整解压维护者提供的软件 ZIP，双击 `ArkCollector.exe`。不要只复制 exe。MuMu 和游戏需已安装，账号由玩家本人登录。
+1. 完整解压维护者提供的软件 ZIP，双击 `ArkCollector.exe`。不要只复制 exe。MuMu 和游戏需已安装，账号由玩家本人登录。到“任务与设置”将采集数据保存位置选为自己的非C盘目录；软件设置、登录态及系统缓存可沿用系统默认位置。
 2. 打开 MuMu 和游戏，进入主页；关闭其它正在控制同一模拟器的 MAA 或脚本。在采集面板检测并选择设备，再选择维护者提供的配套采集运行库。普通官方 MAA 缺少状态回调，不能替代。
 3. 在“账号与练度”扫码获取练度，按提示选择当前游戏账号。不能扫码时可用游戏内扫描或导入名册；技能、模组缺项另留详情截图，助战练度单独记录，不猜填。
 4. 点击“导入采集任务”，选择维护者按账号练度与进度分配的任务包，再点击“开始 / 继续未完成任务”。仅采集时，设置页的自动转换保持关闭。
@@ -45,9 +45,9 @@ uv sync --frozen
 Copy-Item configs/instances/example.yaml configs/instances/collector.local.yaml
 ```
 
-修改 `collector.local.yaml` 中的 `adb_path`、`adb_port`、`maa_dir`。模板端口只是示例，以本机实例为准。当前工厂有目录名护栏：`maa_dir` 路径中必须包含 `maa_runtime_patched`；这个名称本身不能证明文件正确。
+修改 `collector.local.yaml` 中的 `adb_path`、`adb_port`、`maa_dir`，安装路径按本机填写。模板端口只是示例，以本机实例为准。当前工厂有目录名护栏：`maa_dir` 路径中必须包含 `maa_runtime_patched`；这个名称本身不能证明文件正确。AppData、TEMP、ProgramData及uv等工具的常规默认位置允许在系统盘；采集资料目录由用户选择非C盘位置，不把它写成固定的C盘根目录。
 
-本地配置使用 `.local.yaml` 后缀，已被 Git 忽略。原有 `mumu_local*.yaml` 是开发机历史配置，不要直接照抄其中的磁盘路径。
+本地配置使用 `.local.yaml` 后缀，已被 Git 忽略。原有 `mumu_local*.yaml` 只保留模板，不含可直接运行的安装路径或设备端口。工厂、模型闭环与连接冒烟入口都须显式传入 `--instance`，不会自动使用开发机实例。
 
 ## 2. 练度优先扫码，OperBox 为不能扫码时的备选
 
@@ -55,13 +55,15 @@ Copy-Item configs/instances/example.yaml configs/instances/collector.local.yaml
 
 ```powershell
 $env:PYTHONUTF8 = '1'
-$dataRoot = 'C:/ark-data'
+$dataRoot = Read-Host '输入非C盘的数据保存目录完整路径（由你自行选择）'
+if ([string]::IsNullOrWhiteSpace($dataRoot)) { throw '必须选择数据目录' }
+$dataRoot = [IO.Path]::GetFullPath($dataRoot)
 New-Item -ItemType Directory -Force "$dataRoot/debug" | Out-Null
-node tools/skland/collect.mjs --out "$dataRoot/roster/roster_skland.json"
+node tools/skland/collect.mjs --data-root "$dataRoot"
 uv run python -m bridge.roster_state --skland "$dataRoot/roster/roster_skland.json" --out "$dataRoot/roster/roster_merged.json"
 ```
 
-终端显示二维码，用森空岛 APP 扫码并确认后自动导出；已有有效登录态时直接同步。多绑定角色用 `--uid <游戏UID>` 指定，须与录制账号一致。详细参数见 [扫码工具说明](../tools/skland/README.md)。
+磁盘不设默认值，C盘数据根或名册输出会在登录和写文件前被拒绝。名册输出到 `$dataRoot/roster/`，登录态默认输出到 `$dataRoot/.secrets/`；`--cred` 可单独指定本地凭据文件，系统默认凭据位置允许在C盘。终端显示二维码，用森空岛 APP 扫码并确认后自动导出；已有有效登录态时直接同步。多绑定角色用 `--uid <游戏UID>` 指定，须与录制账号一致。详细参数见 [扫码工具说明](../tools/skland/README.md)。
 
 名册保留干员精英化/等级/潜能、**全部技能**的等级/专精、全部模组 ID/等级及完整原始响应。记录采集时间；练度改变后重新同步。每局实际技能/模组由作业/画面对齐，不能把已拥有或其它技能的专精当作本局配置。
 
@@ -74,6 +76,8 @@ uv run python -m bridge.collect_operbox --instance configs/instances/collector.l
 uv run python -m bridge.roster_state --operbox "$dataRoot/roster/operbox.json" --out "$dataRoot/roster/roster_merged.json"
 ```
 
+运行库或资料路径含中文且没有8.3短名时，MAA会使用系统临时目录或ProgramData中的兼容别名；这是允许保留的系统默认缓存，实际采集资料仍写入所选数据目录。
+
 OperBox 提供精英化/等级/潜能，缺技能/模组等级；此时对本批干员另保留详情截图，注明：
 
 - 名称、精英化、等级、潜能；
@@ -81,7 +85,7 @@ OperBox 提供精英化/等级/潜能，缺技能/模组等级；此时对本批
 - 实际装备的模组名称/ID、模组等级，未装备明确记“未装备”；
 - 是否助战、采集时间。升级、换技能或换模组后保存新快照。
 
-未知值留空并说明，不能猜测或填成 0。项目技能编码为普通 1～7、专一/二/三为 8/9/10。森空岛路径保留原始导出；OperBox 备选保留补充截图。登录态仅在本地 `.secrets/`，不交接凭证。
+未知值留空并说明，不能猜测或填成 0。项目技能编码为普通 1～7、专一/二/三为 8/9/10。森空岛路径保留原始导出；OperBox 备选保留补充截图。登录态仅在自选数据根的 `.secrets/`，不交接凭证。
 
 正式跑关前确认连接（该命令会连接模拟器并截图，先结束其它控制任务）：
 

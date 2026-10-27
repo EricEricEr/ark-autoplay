@@ -33,6 +33,7 @@ class ScanWindow(tk.Toplevel):
     def __init__(
         self, master: tk.Misc, service: CollectorService, on_done: Callable[[], None]
     ) -> None:
+        data_root = service.data_root()
         super().__init__(master)
         self.title("获取干员练度")
         self.geometry("480x590")
@@ -42,7 +43,7 @@ class ScanWindow(tk.Toplevel):
         self.directory.mkdir(parents=True)
         self.event_file = self.directory / "progress.json"
         self.selection_file = self.directory / "selected_role.json"
-        self.out = service.home / "roster_skland.local.json"
+        self.out = data_root / "roster/roster_skland.json"
         ttk.Label(
             self, text="森空岛扫码获取练度", font=("Microsoft YaHei UI", 16, "bold")
         ).pack(pady=(22, 8))

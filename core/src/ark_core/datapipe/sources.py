@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import yaml
@@ -83,7 +83,7 @@ def load_config(config_path: Path | None = None) -> DataConfig:
         raise SourceError(f"{path} 缺少 data_version。")
 
     root_raw = raw.get("data_root")
-    if root_raw is None:
+    if root_raw is None or not str(root_raw).strip():
         env_root = os.environ.get(DATA_ROOT_ENV, "").strip()
         data_root = Path(_expand(env_root)).resolve() if env_root else None
     else:
@@ -128,6 +128,17 @@ def _resolve_one(rel_or_abs: str, root: Path | None) -> Path:
     return (base / p).resolve()
 
 
+def _output_path(value: str | Path) -> Path:
+    """项目产物禁止写入C盘；输入原件和系统默认缓存不受此限制。"""
+    raw = _expand(str(value))
+    result = Path(raw).resolve()
+    for candidate in (raw, str(result)):
+        drive = PureWindowsPath(candidate).drive.casefold()
+        if drive.removeprefix("\\\\?\\").removeprefix("\\\\.\\") == "c:":
+            raise SourceError("数据输出不能位于C盘，请用 --out 或数据根指定其他磁盘")
+    return result
+
+
 @dataclass(frozen=True)
 class ResolvedSources:
     """解析后的源 / 输出路径集合（全为绝对路径）。"""
@@ -167,7 +178,18 @@ def resolve_sources(
     out_dir_raw = (
         str(out_override) if out_override is not None else cfg.outputs.get("dir", "processed")
     )
-    out_dir = _resolve_one(out_dir_raw, cfg.data_root)
+    expanded_output = Path(_expand(out_dir_raw))
+    if PureWindowsPath(str(expanded_output)).drive:
+        _output_path(out_dir_raw)
+    if cfg.data_root is None and not expanded_output.is_absolute():
+        if out_override is None:
+            raise SourceError(
+                "未指定数据输出位置，拒绝默认写入仓库。请设置 data_root / "
+                "ARK_DATA_ROOT，或用 --out 指定非C盘输出目录。"
+            )
+        out_dir = _output_path(expanded_output)
+    else:
+        out_dir = _output_path(_resolve_one(out_dir_raw, cfg.data_root))
     return ResolvedSources(config=cfg, paths=paths, missing=missing, out_dir=out_dir)
 
 
@@ -191,4 +213,6 @@ def out_path(resolved: ResolvedSources, output_key: str) -> Path:
     """输出文件路径：outputs 小节给文件名，落到 out_dir 下。"""
     name = resolved.config.outputs.get(output_key, output_key)
     p = Path(name)
-    return p if p.is_absolute() else resolved.out_dir / p
+    if PureWindowsPath(str(p)).drive:
+        _output_path(p)
+    return _output_path(p if p.is_absolute() else resolved.out_dir / p)

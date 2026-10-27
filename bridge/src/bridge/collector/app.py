@@ -499,7 +499,11 @@ class CollectorApp(tk.Tk):
             wraplength=750,
             justify="left",
         ).pack(anchor="w", pady=(10, 0))
-        card = self._card(page, "文件位置", "通常只需首次选择，后续启动自动记住。")
+        card = self._card(
+            page,
+            "文件位置",
+            "采集数据须选择非C盘目录；软件设置和系统缓存保持默认位置。",
+        )
         for name, caption in (
             ("data_dir", "数据保存位置"),
             ("maa_dir", "采集运行库"),
@@ -685,7 +689,7 @@ class CollectorApp(tk.Tk):
         if filename:
             self.background(
                 lambda: export_data(
-                    Path(self.service.settings.data_dir),
+                    Path(self.service.settings.data_dir or self.service.home),
                     Path(filename),
                     diagnostics_home=self.service.home,
                     diagnostics_only=True,
@@ -904,8 +908,16 @@ class CollectorApp(tk.Tk):
                 else "选择采集运行库文件夹",
             )
         if value:
-            setattr(self.service.settings, name, value)
-            self.service.save()
+            try:
+                if name == "data_dir":
+                    self.service.set_data_directory(value)
+                    self.refresh_tasks()
+                else:
+                    setattr(self.service.settings, name, value)
+                    self.service.save()
+            except ValueError as error:
+                self.error(error)
+                return
             self.sync_options()
             if name != "data_dir":
                 self.auto_detect()
@@ -970,7 +982,7 @@ class CollectorApp(tk.Tk):
                 document.get("ops") or document.get("own_opers")
             ):
                 raise ValueError("没有找到可识别的干员资料")
-            target = self.service.home / "imported_roster.local.json"
+            target = self.service.data_root() / "roster/imported_roster.json"
             write_json(target, document)
             player = document.get("player") or {}
             self.service.settings.bind_account(
@@ -995,7 +1007,10 @@ class CollectorApp(tk.Tk):
                 "正在采集", "请先停止当前任务再切换账号或更新练度。", parent=self
             )
             return
-        ScanWindow(self, self.service, self.refresh_roster)
+        try:
+            ScanWindow(self, self.service, self.refresh_roster)
+        except ValueError as error:
+            self.error(error)
 
     def operbox(self) -> None:
         if self.running_action:
@@ -1016,9 +1031,9 @@ class CollectorApp(tk.Tk):
 
         def work() -> str:
             settings = self.service.settings
-            root = Path(settings.data_dir)
+            root = self.service.data_root()
             instance = instance_config(settings, root)
-            out = self.service.home / "operbox.local.json"
+            out = root / "roster/operbox.json"
             spec = self.service.home / "operbox_request.local.json"
             write_json(
                 spec,
@@ -1175,7 +1190,11 @@ class CollectorApp(tk.Tk):
             self.send("stop_now")
 
     def open_data(self) -> None:
-        folder = Path(self.service.settings.data_dir)
+        try:
+            folder = self.service.data_root()
+        except ValueError as error:
+            self.error(error)
+            return
         folder.mkdir(parents=True, exist_ok=True)
         if os.name == "nt":
             os.startfile(folder)
@@ -1209,7 +1228,7 @@ class CollectorApp(tk.Tk):
             redact_personal = not self.include_raw_records.get()
             self.background(
                 lambda: export_data(
-                    Path(self.service.settings.data_dir),
+                    self.service.data_root(),
                     Path(filename),
                     include_images=images,
                     redact_personal=redact_personal,

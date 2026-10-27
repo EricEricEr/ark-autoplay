@@ -17,14 +17,14 @@
 
 name: mumu-local-patched
 adb_host: 127.0.0.1
-adb_port: 16416          # MuMu 12 本实例 ADB 端口
-adb_aliases: [ 7555 ]    # 同一实例亦监听 7555（MuMu 兼容别名）
+adb_port: null          # 在本地副本填写实际实例端口。
+adb_aliases: []
 resolution:
   width: 1920
   height: 1080
 dpi: 320
 # MuMu 12 安装目录自带 adb（本机路径）
-adb_path: E:/Program Files/Netease/MuMu/nx_main/adb.exe
+adb_path: ''  # 在本地副本填写自行选择的adb完整路径。
 # patched MAA 运行时（本机路径；由 maacore 构建产物 + 官方发行版其余文件组装）
-maa_dir: E:/dev/maa_runtime_patched
+maa_dir: ''  # 在本地副本填写配套补丁运行时的完整路径。
 maa_version: dev-v2+a82a0e13+battlestate

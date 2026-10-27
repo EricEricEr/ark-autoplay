@@ -1,0 +1,29 @@
+experiment:
+  name: rotation_full
+  seed: 42
+  device: cuda
+data:
+  processed_dir: ${ARK_ROTATION_ROOT}/processed
+  episodes_root: ${ARK_ROTATION_ROOT}/episode_inputs
+rotation:
+  k: 5
+  final_pretrain_ckpt: ${ARK_ROTATION_PRETRAIN}
+model:
+  hidden_dim: 256
+  num_layers: 4
+  num_dec_layers: 2
+  num_heads: 8
+  dropout: 0.1
+training:
+  epochs: 20
+  batch_size: 1
+  lr: 0.0003
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_train_batches: 0
+  w_type: 1.0
+  w_target: 1.0
+  w_cell: 1.0
+  w_dir: 0.5
+evaluation:
+  runs_dir: ${ARK_ROTATION_ROOT}/runs

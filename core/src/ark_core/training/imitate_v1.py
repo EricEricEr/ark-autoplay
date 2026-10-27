@@ -361,6 +361,8 @@ def train(
     log: Any = print,
     ckpt_name: str = "track_a_v1.pt",
     resume_from: Path | None = None,
+    full_data: bool = False,
+    checkpoint_selection: str = "holdout",
 ) -> dict[str, Any]:
     """训练主循环；按关卡切成 train / holdout 两档，输出常数基线并排对照。
 
@@ -369,6 +371,10 @@ def train(
     ``resume_from``：增量续训的旧 checkpoint 路径（strict 加载，词表/维度不符即报错）。
     """
     set_seed(cfg.seed)
+    if checkpoint_selection not in ("holdout", "last"):
+        raise ValueError("checkpoint_selection 必须为 holdout 或 last")
+    if full_data and (holdout_stages or checkpoint_selection != "last"):
+        raise ValueError("全量最终训练要求空留出集合，并使用预先确定的末轮权重")
     records, featvec, vocab_tokens, state_dim, grid_channels = load_records_v1(npz_path)
     vocab = Vocab(extra_tokens=vocab_tokens)
 
@@ -385,7 +391,7 @@ def train(
     log(f"[data] holdout 关卡: {sorted(holdout_stages)}（关卡级留出）")
     if not train_recs:
         raise ValueError("训练集为空：请检查 holdout_stages 设置")
-    if not hold_recs:
+    if not hold_recs and not full_data:
         raise ValueError("holdout 为空：请检查 holdout_stages 设置")
 
     baselines = constant_baselines(train_recs, hold_recs)
@@ -463,9 +469,13 @@ def train(
             nb += 1
 
         tm = evaluate_v1(model, train_eval_tensors, cfg, device)
-        hm = evaluate_v1(model, hold_tensors, cfg, device, restore_train=False)
+        hm = (
+            evaluate_v1(model, hold_tensors, cfg, device, restore_train=False)
+            if hold_tensors
+            else None
+        )
         model.train()
-        ts, hs = tm.summary(), hm.summary()
+        ts, hs = tm.summary(), hm.summary() if hm is not None else {}
         row = {
             "epoch": ep + 1,
             "train_loss": ep_loss / max(1, nb),
@@ -474,23 +484,31 @@ def train(
             "elapsed_s": round(time.time() - t0, 1),
         }
         history.append(row)
-        log(
-            f"[ep {ep + 1}/{cfg.epochs}] loss={row['train_loss']:.4f} | "
-            f"train type={ts['type_acc']:.3f} f1={ts['macro_f1']:.3f} | "
-            f"holdout type={hs['type_acc']:.3f} f1={hs['macro_f1']:.3f} "
-            f"cell={hs['cell_acc']:.3f} dir={hs['dir_acc']:.3f} tgt={hs['target_acc']:.3f} | "
-            f"{row['elapsed_s']}s"
-        )
+        if hs:
+            log(
+                f"[ep {ep + 1}/{cfg.epochs}] loss={row['train_loss']:.4f} | "
+                f"train type={ts['type_acc']:.3f} f1={ts['macro_f1']:.3f} | "
+                f"holdout type={hs['type_acc']:.3f} f1={hs['macro_f1']:.3f} "
+                f"cell={hs['cell_acc']:.3f} dir={hs['dir_acc']:.3f} tgt={hs['target_acc']:.3f} | "
+                f"{row['elapsed_s']}s"
+            )
+        else:
+            log(
+                f"[ep {ep + 1}/{cfg.epochs}] 全量训练 loss={row['train_loss']:.4f} "
+                f"已见数据 type={ts['type_acc']:.3f} cell={ts['cell_acc']:.3f} "
+                f"dir={ts['dir_acc']:.3f} | {row['elapsed_s']}s"
+            )
 
         # 选优准则：type_acc 主导类污染严重（deploy 占多数），并看 macro-F1
-        score = float(hs["type_acc"]) + float(hs["macro_f1"])
-        if score > best_score:
+        score = float(hs["type_acc"]) + float(hs["macro_f1"]) if hs else float("-inf")
+        selected = (ep + 1 == cfg.epochs) if checkpoint_selection == "last" else score > best_score
+        if selected:
             best_score = score
             best_epoch = ep + 1
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_metrics = dict(hs)
             best_train_metrics = dict(ts)
-            log(f"    ↑ 新的最优 holdout（score={score:.4f}）")
+            log(f"    [checkpoint] 保存候选，选择方式={checkpoint_selection}，轮次={ep + 1}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt = out_dir / ckpt_name
@@ -507,14 +525,13 @@ def train(
             "holdout_stages": sorted(holdout_stages),
             "best_epoch": best_epoch,
             "best_holdout": best_metrics,
+            "full_data": full_data,
+            "checkpoint_selection": checkpoint_selection,
         },
         ckpt,
     )
     log(f"[save] {ckpt}（最优 epoch {best_epoch}）")
-    log(
-        "[诚实口径] 本结果为 ~1k 状态-动作对上的**链路冒烟**验证，"
-        "证明 (battle_state, action) 数据→模型→指标链路可走通，不作能力证据。"
-    )
+    log("[评测口径] 已见训练数据拟合成绩单独记录；离线动作预测指标不等于自主通关率。")
     return {
         "n_params": n_params,
         "n_train": len(train_recs),
@@ -526,4 +543,8 @@ def train(
         "baselines": baselines,
         "history": history,
         "checkpoint": str(ckpt),
+        "full_data": full_data,
+        "checkpoint_selection": checkpoint_selection,
+        "train_episode_ids": [str(r.get("coverage_id", r["episode_id"])) for r in train_recs],
+        "holdout_episode_ids": [str(r.get("coverage_id", r["episode_id"])) for r in hold_recs],
     }

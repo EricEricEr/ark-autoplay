@@ -63,6 +63,8 @@ class PrivacyGateTests(unittest.TestCase):
             "roster_skland.json",
             "capture.mp4",
             "before.bundle",
+            "manual_sessions/sample/session.json",
+            "bridge/manual_sessions/sample/input_events.jsonl",
         ):
             self.assertTrue(private_filename(name))
         self.assertFalse(private_filename("example.yaml"))

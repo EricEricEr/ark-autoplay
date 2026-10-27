@@ -74,7 +74,16 @@ def private_filename(name: str) -> bool:
     parts = {part.lower() for part in p.parts}
     filename = p.name.lower()
     return (
-        bool(parts & {".secrets", "episodes", "episodes_quarantine", "debug"})
+        bool(
+            parts
+            & {
+                ".secrets",
+                "episodes",
+                "episodes_quarantine",
+                "manual_sessions",
+                "debug",
+            }
+        )
         or filename in PRIVATE_NAMES
         or filename.endswith((".local.yaml", ".local.json", ".fast-export", ".tar.gz"))
         or p.suffix.lower() in PRIVATE_EXTENSIONS

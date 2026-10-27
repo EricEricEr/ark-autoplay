@@ -340,6 +340,9 @@ class CollectorApp(tk.Tk):
         ttk.Button(row, text="导入采集任务", command=self.import_tasks).pack(
             side="right"
         )
+        ttk.Button(
+            task, text="采集玩家自己的手动操作（无需作业）", command=self.open_manual
+        ).pack(anchor="w", pady=(12, 0))
         progress = self._card(page, "实时进度")
         numbers = tk.Frame(progress, bg="white")
         numbers.pack(fill="x", pady=(12, 12))
@@ -922,6 +925,12 @@ class CollectorApp(tk.Tk):
             if name != "data_dir":
                 self.auto_detect()
 
+    def open_manual(self) -> None:
+        """打开旁路录制，不改变现有队列或启动任何游戏动作。"""
+        from .manual_ui import ManualWindow
+
+        ManualWindow(self, self.service)
+
     def import_tasks(self) -> None:
         source = filedialog.askopenfilename(
             parent=self,
@@ -1121,6 +1130,9 @@ class CollectorApp(tk.Tk):
         self.refresh_roster()
 
     def start(self, *, retry_failed: bool = False, restart_all: bool = False) -> None:
+        if self.service.settings.extras.get("last_capture_mode") == "manual":
+            self.open_manual()
+            return
         if self.running_action:
             messagebox.showinfo(
                 "正在处理", "请先等待当前操作完成，再开始采集。", parent=self
@@ -1182,9 +1194,15 @@ class CollectorApp(tk.Tk):
         )
 
     def stop_now(self) -> None:
+        description = (
+            "停止本次录制并保留半局；游戏仍由你控制，不会被中止。"
+            if self.service.settings.extras.get("last_capture_mode") == "manual"
+            else "将中止当前局。已采数据保留，当前局可能不完整，需要重新采集。"
+            "\n\n是否立即停止？"
+        )
         if self.service.is_running() and messagebox.askyesno(
             "立即停止",
-            "将中止当前局。已采数据保留，当前局可能不完整，需要重新采集。\n\n是否立即停止？",
+            description,
             parent=self,
         ):
             self.send("stop_now")
@@ -1410,12 +1428,17 @@ class CollectorApp(tk.Tk):
             )
             active = self.service.is_running() or self.running_action
             self.start_button.configure(
+                text="手动采集 / 开始新一局"
+                if self.service.settings.extras.get("last_capture_mode") == "manual"
+                else "开始 / 继续未完成任务",
                 state="normal"
                 if not active or state["status"] == "paused"
-                else "disabled"
+                else "disabled",
             )
             self.pause_button.configure(
-                state="normal" if self.service.is_running() else "disabled"
+                state="normal"
+                if self.service.is_running() and not state.get("manual")
+                else "disabled"
             )
         except (OSError, ValueError) as error:
             self.detail_text.set("进度暂时不可读，正在重新检查。")

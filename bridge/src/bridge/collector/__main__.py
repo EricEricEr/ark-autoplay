@@ -14,6 +14,7 @@ def main(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(description="方舟数据采集助手")
     parser.add_argument("--run", type=Path)
+    parser.add_argument("--manual", type=Path)
     parser.add_argument("--episode", type=Path)
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--home", type=Path)
@@ -34,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
 
         root = Path(__file__).parent
         resources = [
+            root / "resources/manual_capture.json",
             root / "resources/runtime_compatibility.json",
             root.parent / "resources/battle_lifecycle.json",
             root.parent / "resources/post_battle/resource/tasks/ark_post_battle.json",
@@ -57,6 +59,10 @@ def main(argv: list[str] | None = None) -> int:
         specification = read_json(args.convert)
         convert(Path(specification["data_root"]), Path(specification["output"]))
         return 0
+    if args.manual:
+        from bridge.manual_capture import run_manual
+
+        return run_manual(args.manual)
     if args.run or args.episode:
         from .worker import episode, run_session
 

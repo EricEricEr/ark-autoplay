@@ -71,6 +71,27 @@ def attach(app: Any, proof: Path) -> None:
                 capture("collector-finished.png")
                 app.show_page("账号与练度")
                 capture("collector-account.png")
+                from .manual_ui import ManualWindow
+
+                manual = ManualWindow(app, app.service)
+                manual.geometry("+100+100")
+                manual.deiconify()
+                manual.lift()
+                manual.update()
+                time.sleep(0.3)
+                manual.update()
+                manual.update_idletasks()
+                from PIL import ImageGrab
+
+                ImageGrab.grab(window=manual.winfo_id()).save(
+                    proof.parent / "collector-manual.png"
+                )
+                assert (
+                    manual.start_button.winfo_rooty()
+                    + manual.start_button.winfo_height()
+                    <= manual.winfo_rooty() + manual.winfo_height()
+                )
+                manual.destroy()
                 if (
                     app.service.settings.allow_originite
                     or app.service.settings.allow_medicine
@@ -90,6 +111,7 @@ def attach(app: Any, proof: Path) -> None:
                             "all tasks retained",
                             "failed task isolation",
                             "resource defaults off",
+                            "manual recording window",
                         ],
                         "errors": errors,
                     },

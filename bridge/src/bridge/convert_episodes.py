@@ -219,6 +219,10 @@ def convert(data_root: Path, out: Path) -> dict[str, Any]:
         raise FileExistsError("输出目录已存在；请换一个新目录，不能重复追加")
     ep_root = data_root / "episodes"
     if not ep_root.is_dir():
+        if (data_root / "manual_sessions").is_dir():
+            from bridge.manual_convert import convert_manual
+
+            return convert_manual(data_root, out)
         raise ValueError("--data-root 下没有 episodes 目录")
     if out.is_relative_to(ep_root):
         raise ValueError("输出不能放在原始 episodes 内")
@@ -335,6 +339,10 @@ def convert(data_root: Path, out: Path) -> dict[str, Any]:
             "rejected": issues,
             "note": "win 标签来自采集元数据，未读取结算图片；不作人工通关认证",
         }
+        if (data_root / "manual_sessions").is_dir():
+            from bridge.manual_convert import convert_manual
+
+            report["manual"] = convert_manual(data_root, work / "manual")
         _write_json(work / "quality_report.json", report)
         _write_json(
             work / "MANIFEST.json",

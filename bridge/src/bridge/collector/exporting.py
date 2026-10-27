@@ -70,6 +70,7 @@ def export_data(
     redact_personal: bool = True,
     diagnostics_home: Path | None = None,
     diagnostics_only: bool = False,
+    manual_only: bool = False,
 ) -> dict[str, int]:
     """创建新ZIP，原件不删改；分享范围由玩家在导出界面明确选择。"""
     if not diagnostics_only:
@@ -83,7 +84,11 @@ def export_data(
         "roster_snapshots",
         "tasks",
         "exports",
+        "manual_sessions",
     )
+    if manual_only:
+        allowed = ("manual_sessions",)
+    manual_images_omitted = False
     counts = {"files": 0, "images": 0, "redacted_json": 0}
     manifest = {}
     source_hashes = {}
@@ -103,7 +108,9 @@ def export_data(
             )
             candidates += (
                 [root / "collection_results.jsonl"]
-                if (root / "collection_results.jsonl").exists() and not diagnostics_only
+                if (root / "collection_results.jsonl").exists()
+                and not diagnostics_only
+                and not manual_only
                 else []
             )
             for source in sorted(candidates):
@@ -119,6 +126,7 @@ def export_data(
                 suffix = source.suffix.casefold()
                 image = suffix in (".png", ".jpg", ".jpeg", ".mp4")
                 if image and not include_images:
+                    manual_images_omitted |= relative.parts[0] == "manual_sessions"
                     continue
                 raw_task_archive = (
                     not redact_personal
@@ -217,6 +225,9 @@ def export_data(
                         "created_at": now(),
                         "counts": counts,
                         "includes_images": include_images,
+                        "manual_only": manual_only,
+                        "manual_images_omitted": manual_images_omitted,
+                        "manual_inputs_are_not_tactical_action_labels": True,
                         "login_credentials_included": False,
                         "personal_fields_redacted": redact_personal,
                         "raw_records_not_certified_as_wins": not redact_personal,

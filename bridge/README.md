@@ -6,6 +6,8 @@
 
 协作分工见 [采集者指南](docs/collecting.md)。运行时来源、版本和重建见 [maacore/README.md](maacore/README.md)；上游关系见 [NOTICE.md](NOTICE.md)。
 
+支持[玩家手动操作采集](docs/manual-collection.md)：玩家直接在MuMu操作，不需要作业或队列。助手记录原始输入与截图，未识别的部署/技能语义保持缺失，不冒充现有策略模仿标签。
+
 ## 当前实现（2026-10-26）
 
 | 模块 | 能力与边界 |

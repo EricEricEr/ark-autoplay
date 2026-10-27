@@ -1,0 +1,6 @@
+{
+  "frame_interval_s": 0.5,
+  "device_call_timeout_s": 15,
+  "result_confirmation_frames": 2,
+  "game_packages": ["com.hypergryph.arknights", "com.hypergryph.arknights.bilibili"]
+}

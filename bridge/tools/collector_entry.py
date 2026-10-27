@@ -15,6 +15,7 @@ def entry() -> int:
     except Exception as error:
         modes = (
             "--run",
+            "--manual",
             "--episode",
             "--operbox",
             "--convert",

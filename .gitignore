@@ -2,6 +2,7 @@
 **/debug/
 **/episodes/
 **/episodes_quarantine/
+**/manual_sessions/
 **/processed/
 **/runs/
 **/.venv/
